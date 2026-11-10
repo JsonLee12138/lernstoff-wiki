@@ -1,16 +1,7 @@
 #!/usr/bin/env node
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  copyFileSync,
-  openSync,
-  closeSync,
-} from "node:fs";
+import { existsSync, readFileSync, openSync, closeSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import {
   initVault,
   loadConfig,
@@ -26,15 +17,8 @@ import { runMcpStdio } from "./stdio-proxy.js";
 import { ServiceManager } from "./service-manager.js";
 import { AgentInstaller, DEFAULT_SKILL_MD } from "./agent-installer.js";
 import { searchCmd, inquiryCmd, scratchpadCmd, lintCmd } from "./cognitive-cmds.js";
-
-const require = createRequire(import.meta.url);
-const CLI_VERSION: string = (() => {
-  try {
-    return require("../package.json").version || "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-})();
+import { installObsidianPlugin } from "./plugin-installer.js";
+import { CLI_VERSION } from "./version.js";
 
 // Minimal helper to parse flags and arguments
 function parseArgs(args: string[]) {
@@ -292,53 +276,20 @@ async function main() {
     case "plugin": {
       const action = subCommand || "install";
       if (action === "install") {
-        const obsidianDir = join(vaultPath, ".obsidian");
-        const targetPluginDir = join(obsidianDir, "plugins", "lernstoff-wiki");
-        mkdirSync(targetPluginDir, { recursive: true });
-
-        // Look for plugin assets in known locations
-        const candidateDirs = [
-          join(import.meta.dirname, "../../obsidian-plugin/dist"),
-          join(import.meta.dirname, "../node_modules/@lernstoff/obsidian-plugin/dist"),
-          join(process.cwd(), "packages/obsidian-plugin/dist"),
-        ];
-        let foundDir: string | null = null;
-        for (const dir of candidateDirs) {
-          if (existsSync(join(dir, "main.js")) && existsSync(join(dir, "manifest.json"))) {
-            foundDir = dir;
-            break;
-          }
-        }
-
-        if (!foundDir) {
-          console.error(
-            "Could not find compiled plugin assets (main.js, manifest.json). Please run 'pnpm build' first.",
+        try {
+          const result = await installObsidianPlugin({ vaultPath, version: CLI_VERSION });
+          console.log(
+            `✅ Successfully installed Obsidian plugin into:\n   ${result.targetPluginDir}`,
           );
+          console.log(
+            `   Source: ${result.source === "local" ? "Local bundled assets" : "GitHub Releases"}`,
+          );
+          console.log(`   Copied: main.js, manifest.json, styles.css`);
+          console.log(`   Enabled in community-plugins.json`);
+        } catch (err: any) {
+          console.error(`❌ Plugin installation failed: ${err.message}`);
           process.exit(1);
         }
-
-        copyFileSync(join(foundDir, "main.js"), join(targetPluginDir, "main.js"));
-        copyFileSync(join(foundDir, "manifest.json"), join(targetPluginDir, "manifest.json"));
-        if (existsSync(join(foundDir, "styles.css"))) {
-          copyFileSync(join(foundDir, "styles.css"), join(targetPluginDir, "styles.css"));
-        }
-
-        // Enable in community-plugins.json if it exists
-        const communityPluginsPath = join(obsidianDir, "community-plugins.json");
-        try {
-          let plugins: string[] = [];
-          if (existsSync(communityPluginsPath)) {
-            plugins = JSON.parse(readFileSync(communityPluginsPath, "utf-8"));
-          }
-          if (!plugins.includes("lernstoff-wiki")) {
-            plugins.push("lernstoff-wiki");
-            writeFileSync(communityPluginsPath, JSON.stringify(plugins, null, 2), "utf-8");
-          }
-        } catch {}
-
-        console.log(`✅ Successfully installed Obsidian plugin into:\n   ${targetPluginDir}`);
-        console.log(`   Copied: main.js, manifest.json, styles.css`);
-        console.log(`   Enabled in community-plugins.json`);
       }
       break;
     }

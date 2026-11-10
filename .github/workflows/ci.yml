@@ -94,6 +94,9 @@ jobs:
           test -f packages/obsidian-plugin/dist/main.js || { echo "Missing obsidian-plugin/dist/main.js"; exit 1; }
           test -f packages/obsidian-plugin/dist/manifest.json || { echo "Missing obsidian-plugin/dist/manifest.json"; exit 1; }
           test -f packages/obsidian-plugin/dist/styles.css || { echo "Missing obsidian-plugin/dist/styles.css"; exit 1; }
+          test -f packages/cli/assets/plugin/main.js || { echo "Missing cli/assets/plugin/main.js"; exit 1; }
+          test -f packages/cli/assets/plugin/manifest.json || { echo "Missing cli/assets/plugin/manifest.json"; exit 1; }
+          test -f packages/cli/assets/plugin/styles.css || { echo "Missing cli/assets/plugin/styles.css"; exit 1; }
           echo "✅ All build artifacts verified successfully."
 
       - name: Upload Obsidian Plugin Artifact

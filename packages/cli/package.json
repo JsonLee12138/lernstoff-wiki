@@ -1,6 +1,6 @@
 {
   "name": "@lernstoff/cli",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "description": "Headless CLI and daemon manager for Lernstoff cognitive note-taking engine",
   "homepage": "https://github.com/JsonLee12138/lernstoff-wiki#readme",
   "license": "MIT",
@@ -14,6 +14,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "README.md",
     "LICENSE"
   ],
@@ -23,7 +24,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node ../../scripts/sync-plugin-assets.mjs",
     "test": "vp test"
   },
   "dependencies": {

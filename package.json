@@ -1,6 +1,6 @@
 {
   "name": "lernstoff-wiki",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -11,7 +11,7 @@
   "scripts": {
     "check": "vp check",
     "test": "vp test",
-    "build": "tsdown -W",
+    "build": "tsdown -W && node scripts/sync-plugin-assets.mjs",
     "format": "vp fmt",
     "lint": "vp lint"
   },
