@@ -1,11 +1,27 @@
 {
   "name": "@lernstoff/cli",
   "version": "0.1.0-beta.1",
+  "description": "Headless CLI and daemon manager for Lernstoff cognitive note-taking engine",
+  "homepage": "https://github.com/JsonLee12138/lernstoff-wiki#readme",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JsonLee12138/lernstoff-wiki.git",
+    "directory": "packages/cli"
+  },
   "bin": {
     "lernstoff": "./dist/bin.mjs"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "type": "module",
   "main": "./dist/bin.mjs",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsdown",
     "test": "vp test"
