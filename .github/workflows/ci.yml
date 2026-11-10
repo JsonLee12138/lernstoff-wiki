@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Code Quality & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format & Lint Check (Vite+)
+        run: pnpm check
+
+  test:
+    name: Test Suite (Node ${{ matrix.node-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Test Suites
+        run: pnpm test --run
+
+  build:
+    name: Monorepo Build & Artifact Verification
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build All Packages
+        run: pnpm build
+
+      - name: Verify Build Artifacts
+        run: |
+          test -f packages/core/dist/index.mjs || { echo "Missing core/dist/index.mjs"; exit 1; }
+          test -f packages/core/dist/config.mjs || { echo "Missing core/dist/config.mjs"; exit 1; }
+          test -f packages/cli/dist/bin.mjs || { echo "Missing cli/dist/bin.mjs"; exit 1; }
+          test -f packages/obsidian-plugin/dist/main.js || { echo "Missing obsidian-plugin/dist/main.js"; exit 1; }
+          test -f packages/obsidian-plugin/dist/manifest.json || { echo "Missing obsidian-plugin/dist/manifest.json"; exit 1; }
+          test -f packages/obsidian-plugin/dist/styles.css || { echo "Missing obsidian-plugin/dist/styles.css"; exit 1; }
+          echo "✅ All build artifacts verified successfully."
+
+      - name: Upload Obsidian Plugin Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsidian-plugin-dist
+          path: packages/obsidian-plugin/dist/
+          retention-days: 14
+
+      - name: Upload CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-dist
+          path: packages/cli/dist/
+          retention-days: 14

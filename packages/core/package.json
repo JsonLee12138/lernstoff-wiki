@@ -1,0 +1,32 @@
+{
+  "name": "@lernstoff/core",
+  "version": "2.0.0",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./config": {
+      "types": "./dist/config.d.mts",
+      "import": "./dist/config.mjs",
+      "default": "./dist/config.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@tobilu/qmd": "^2.8.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0"
+  }
+}

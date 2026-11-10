@@ -1,0 +1,22 @@
+{
+  "name": "lernstoff-wiki",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "vp check",
+    "test": "vp test",
+    "build": "tsdown -W",
+    "format": "vp fmt",
+    "lint": "vp lint"
+  },
+  "devDependencies": {
+    "@tobilu/qmd": "^2.8.3",
+    "@types/node": "^22.13.0",
+    "tsdown": "^0.23.7",
+    "typescript": "^5.8.0",
+    "vite-plus": "^1.1.0",
+    "zod": "^4.6.7"
+  },
+  "packageManager": "pnpm@10.5.2"
+}

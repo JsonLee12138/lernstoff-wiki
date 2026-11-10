@@ -1,0 +1,21 @@
+{
+  "name": "@lernstoff/cli",
+  "version": "2.0.0",
+  "bin": {
+    "lernstoff": "./dist/bin.mjs"
+  },
+  "type": "module",
+  "main": "./dist/bin.mjs",
+  "scripts": {
+    "build": "tsdown",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@lernstoff/core": "workspace:*",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0"
+  }
+}

@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+
+allowBuilds:
+  node-llama-cpp: true
+  tree-sitter-go: true
+  tree-sitter-javascript: true
+  tree-sitter-python: true
+  tree-sitter-rust: true
+  tree-sitter-typescript: true

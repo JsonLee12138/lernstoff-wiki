@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release Assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Code Quality & Lint Check
+        run: pnpm check
+
+      - name: Run Test Suites
+        run: pnpm test --run
+
+      - name: Build Monorepo (tsdown)
+        run: pnpm build
+
+      - name: Prepare Obsidian Plugin Release Bundle
+        run: |
+          cd packages/obsidian-plugin/dist
+          zip -r ../../../lernstoff-wiki-${{ github.ref_name }}.zip main.js manifest.json styles.css
+          cd ../../..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packages/obsidian-plugin/dist/main.js
+            packages/obsidian-plugin/dist/manifest.json
+            packages/obsidian-plugin/dist/styles.css
+            lernstoff-wiki-${{ github.ref_name }}.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}

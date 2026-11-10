@@ -1,0 +1,19 @@
+# Dependencies & Build Artifacts
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Vault & Obsidian runtime states
+.lernstoff/
+.obsidian/
+
+# Internal Development Documents (PRD, Research, Task planning)
+# Excluded from open-source release; only user docs and source code are published
+PRD.md
+PRD*.md
+docs/
+tasks/
+TODO.md
+todo.md
+*.scratch.*

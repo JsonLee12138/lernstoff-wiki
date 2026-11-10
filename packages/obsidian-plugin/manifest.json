@@ -1,0 +1,10 @@
+{
+  "id": "lernstoff-wiki",
+  "name": "Lernstoff Wiki",
+  "version": "2.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Headless cognitive selective note-taking engine and visual configuration cockpit powered by QMD kernel",
+  "author": "JsonLee12138",
+  "authorUrl": "https://github.com/JsonLee12138/lernstoff-wiki",
+  "isDesktopOnly": true
+}
