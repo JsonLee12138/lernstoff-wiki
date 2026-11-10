@@ -57,6 +57,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build Monorepo (tsdown)
+        run: pnpm build
+
       - name: Run Test Suites
         run: pnpm test --run
 

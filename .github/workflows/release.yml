@@ -32,11 +32,11 @@ jobs:
       - name: Code Quality & Lint Check
         run: pnpm check
 
-      - name: Run Test Suites
-        run: pnpm test --run
-
       - name: Build Monorepo (tsdown)
         run: pnpm build
+
+      - name: Run Test Suites
+        run: pnpm test --run
 
       - name: Prepare Obsidian Plugin Release Bundle
         run: |
