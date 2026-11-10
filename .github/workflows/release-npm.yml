@@ -58,3 +58,81 @@ jobs:
       - name: Publish to npm
         run: |
           pnpm -r publish --no-git-checks --access public --tag ${{ steps.tag-step.outputs.dist_tag }} --provenance
+
+  sync-formula:
+    name: Auto-update Homebrew Formula
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Extract version
+        id: get_version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(node -p 'require("./packages/cli/package.json").version')
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Wait for npm tarball and compute SHA256
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          URL="https://registry.npmjs.org/@lernstoff/cli/-/cli-${VERSION}.tgz"
+          echo "Waiting for ${URL} to become available on npm..."
+          for i in {1..30}; do
+            if curl -sSfL "$URL" -o cli.tgz; then
+              echo "Tarball downloaded successfully."
+              break
+            fi
+            echo "Waiting for npm registry CDN to propagate (attempt $i/30)..."
+            sleep 6
+          done
+
+          if [ ! -f cli.tgz ]; then
+            echo "Failed to fetch npm tarball after retries"
+            exit 1
+          fi
+
+          SHA256=$(sha256sum cli.tgz | awk '{print $1}')
+          echo "Computed SHA256: ${SHA256}"
+
+          # Update Formula/lernstoff.rb in current repository
+          sed -i -E "s|url \"https://registry.npmjs.org/@lernstoff/cli/-/cli-.*\.tgz\"|url \"${URL}\"|" Formula/lernstoff.rb
+          sed -i -E "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/lernstoff.rb
+
+      - name: Commit & push updated formula to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/lernstoff.rb
+          if git diff --staged --quiet; then
+            echo "Formula already up-to-date."
+          else
+            git commit -m "chore(formula): auto-sync formula to ${{ steps.get_version.outputs.version }}"
+            git push origin main
+          fi
+
+      - name: Sync to Homebrew Tap repository
+        if: env.TAP_TOKEN != ''
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/JsonLee12138/homebrew-lernstoff-wiki.git" /tmp/tap
+          cp Formula/lernstoff.rb /tmp/tap/Formula/lernstoff.rb
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/lernstoff.rb
+          if git diff --staged --quiet; then
+            echo "Tap repository already up-to-date."
+          else
+            git commit -m "chore: bump lernstoff to ${{ steps.get_version.outputs.version }}"
+            git push origin main
+          fi
