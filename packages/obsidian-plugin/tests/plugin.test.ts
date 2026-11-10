@@ -100,4 +100,24 @@ describe("Obsidian Plugin DaemonClient & Settings Synchronization", () => {
     expect(isRunning).toBe(false);
     expect(client.isRunning).toBe(false);
   });
+
+  it("ensures .lernstoff directory exists when starting daemon", async () => {
+    const uninitDir = mkdtempSync(join(tmpdir(), "lernstoff-uninit-"));
+    const testClient = new DaemonClient(uninitDir);
+    try {
+      expect(existsSync(join(uninitDir, ".lernstoff"))).toBe(false);
+
+      // startDaemon ensures .lernstoff directory and boots background daemon
+      const ok = await testClient.startDaemon();
+      expect(ok).toBe(true);
+      expect(existsSync(join(uninitDir, ".lernstoff"))).toBe(true);
+      expect(testClient.isRunning).toBe(true);
+    } finally {
+      await testClient.stopDaemon();
+      testClient.destroy();
+      if (existsSync(uninitDir)) {
+        rmSync(uninitDir, { recursive: true, force: true });
+      }
+    }
+  });
 });

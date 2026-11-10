@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, openSync, closeSync } from "node:fs";
+import { existsSync, readFileSync, openSync, closeSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
 import {
@@ -119,7 +119,10 @@ async function main() {
             return;
           }
 
-          const logPath = join(vaultPath, LERNSTOFF_DIR, "daemon.log");
+          const lernstoffDir = join(vaultPath, LERNSTOFF_DIR);
+          mkdirSync(lernstoffDir, { recursive: true });
+
+          const logPath = join(lernstoffDir, "daemon.log");
           const logFd = openSync(logPath, "a");
 
           const child = spawn(

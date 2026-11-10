@@ -150,8 +150,31 @@ export default class LernstoffPlugin extends Plugin {
       name: "Restart Background Daemon (重启后台认知引擎)",
       callback: async () => {
         new Notice("Restarting Lernstoff Daemon...");
-        await this.client.restartDaemon();
-        new Notice(this.client.isRunning ? "Lernstoff Daemon online." : "Failed to start Daemon.");
+        const ok = await this.client.restartDaemon();
+        new Notice(ok ? "🟢 Lernstoff Daemon online." : "❌ Failed to restart Daemon.");
+      },
+    });
+
+    this.addCommand({
+      id: "start-daemon",
+      name: "Start Background Daemon (启动后台认知引擎)",
+      callback: async () => {
+        new Notice("Starting Lernstoff Daemon...");
+        const ok = await this.client.startDaemon();
+        new Notice(
+          ok
+            ? "🟢 Lernstoff Daemon online."
+            : "❌ Failed to start Daemon. Check .lernstoff/daemon.log",
+        );
+      },
+    });
+
+    this.addCommand({
+      id: "stop-daemon",
+      name: "Stop Background Daemon (停止后台认知引擎)",
+      callback: async () => {
+        await this.client.stopDaemon();
+        new Notice("🛑 Stopped Lernstoff Daemon.");
       },
     });
 

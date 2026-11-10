@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import {
@@ -66,8 +66,6 @@ export class DaemonClient {
 
     if (!this.isRunning && this.config.server.autoStartOnObsidianOpen) {
       await this.startDaemon();
-      await new Promise((r) => setTimeout(r, 600));
-      await this.checkDaemon();
     }
 
     if (this.isRunning) {
@@ -162,16 +160,48 @@ export class DaemonClient {
 
   private getSpawnEnv(): NodeJS.ProcessEnv {
     const home = process.env.HOME || process.env.USERPROFILE || "";
-    const extraPaths = [
+    const extraPaths: string[] = [
       "/opt/homebrew/bin",
+      "/opt/homebrew/opt/node@22/bin",
+      "/opt/homebrew/opt/node/bin",
       "/usr/local/bin",
       join(home, ".local/bin"),
       join(home, ".npm-global/bin"),
       join(home, ".pnpm"),
+      join(home, ".local/share/mise/shims"),
+      join(home, ".local/share/fnm/current/bin"),
+      join(home, ".fnm/current/bin"),
+      join(home, ".volta/bin"),
+      join(home, ".asdf/shims"),
     ];
+
+    // Check NVM node paths, preferring higher Node versions (>= 20)
+    const nvmDir = join(home, ".nvm/versions/node");
+    if (existsSync(nvmDir)) {
+      try {
+        const versions = readdirSync(nvmDir)
+          .filter((v) => {
+            const major = parseInt(v.replace(/^v/, ""), 10);
+            return !isNaN(major) && major >= 20;
+          })
+          .sort((a, b) => {
+            const ma = parseInt(a.replace(/^v/, ""), 10);
+            const mb = parseInt(b.replace(/^v/, ""), 10);
+            return mb - ma;
+          });
+        for (const v of versions) {
+          extraPaths.push(join(nvmDir, v, "bin"));
+        }
+      } catch {}
+    }
+
+    const currentPath = process.env.PATH || "";
+    const pathParts = (currentPath ? currentPath.split(":") : []).concat(extraPaths);
+    const uniquePaths = Array.from(new Set(pathParts.filter(Boolean)));
+
     return {
       ...process.env,
-      PATH: `${extraPaths.join(":")}:${process.env.PATH || ""}`,
+      PATH: uniquePaths.join(":"),
     };
   }
 
@@ -182,7 +212,21 @@ export class DaemonClient {
       "/usr/local/bin/lernstoff",
       join(home, ".local/bin/lernstoff"),
       join(home, ".npm-global/bin/lernstoff"),
+      join(home, ".local/share/mise/shims/lernstoff"),
+      join(home, ".volta/bin/lernstoff"),
+      join(home, ".asdf/shims/lernstoff"),
+      join(home, ".pnpm/lernstoff"),
     ];
+
+    const nvmDir = join(home, ".nvm/versions/node");
+    if (existsSync(nvmDir)) {
+      try {
+        const versions = readdirSync(nvmDir);
+        for (const v of versions) {
+          candidates.push(join(nvmDir, v, "bin/lernstoff"));
+        }
+      } catch {}
+    }
 
     for (const c of candidates) {
       if (existsSync(c)) {
@@ -193,8 +237,15 @@ export class DaemonClient {
     return { cmd: "lernstoff", baseArgs: [] };
   }
 
-  public async startDaemon(): Promise<void> {
+  public async startDaemon(): Promise<boolean> {
     try {
+      const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
+      if (!existsSync(lernstoffDir)) {
+        try {
+          mkdirSync(lernstoffDir, { recursive: true });
+        } catch {}
+      }
+
       const { cmd, baseArgs } = this.resolveCommand();
       const args = [...baseArgs, "server", "start", "--daemon", "--vault", this.vaultPath];
       const env = this.getSpawnEnv();
@@ -210,8 +261,20 @@ export class DaemonClient {
       });
 
       child.unref();
+
+      // Poll checkDaemon up to 3 seconds for daemon to initialize and come online
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        const ok = await this.checkDaemon();
+        if (ok) {
+          this.connectSse();
+          return true;
+        }
+      }
+      return false;
     } catch (err: any) {
       console.warn("[Lernstoff] Failed to spawn lernstoff CLI:", err?.message || err);
+      return false;
     }
   }
 
@@ -238,12 +301,10 @@ export class DaemonClient {
     this.notify();
   }
 
-  public async restartDaemon(): Promise<void> {
+  public async restartDaemon(): Promise<boolean> {
     await this.stopDaemon();
     await new Promise((r) => setTimeout(r, 500));
-    await this.startDaemon();
-    await new Promise((r) => setTimeout(r, 800));
-    await this.checkDaemon();
+    return await this.startDaemon();
   }
 
   private connectSse(): void {

@@ -40,16 +40,28 @@ export class LernstoffSettingsTab extends PluginSettingTab {
           .setCta()
           .setDisabled(this.client.isRunning)
           .onClick(async () => {
-            await this.client.startDaemon();
             new Notice("Starting Lernstoff Daemon...");
-            setTimeout(() => this.display(), 1000);
+            const ok = await this.client.startDaemon();
+            if (ok) {
+              new Notice("🟢 Lernstoff Daemon online.");
+            } else {
+              new Notice(
+                "❌ Failed to start Lernstoff Daemon. Check logs in .lernstoff/daemon.log",
+              );
+            }
+            this.display();
           }),
       )
       .addButton((btn) =>
         btn.setButtonText("Restart").onClick(async () => {
-          await this.client.restartDaemon();
-          new Notice("Restarted Lernstoff Daemon.");
-          setTimeout(() => this.display(), 1200);
+          new Notice("Restarting Lernstoff Daemon...");
+          const ok = await this.client.restartDaemon();
+          if (ok) {
+            new Notice("🟢 Lernstoff Daemon online.");
+          } else {
+            new Notice("❌ Failed to restart Lernstoff Daemon.");
+          }
+          this.display();
         }),
       )
       .addButton((btn) =>
@@ -59,7 +71,7 @@ export class LernstoffSettingsTab extends PluginSettingTab {
           .setDisabled(!this.client.isRunning)
           .onClick(async () => {
             await this.client.stopDaemon();
-            new Notice("Stopped Lernstoff Daemon.");
+            new Notice("🛑 Stopped Lernstoff Daemon.");
             this.display();
           }),
       );
