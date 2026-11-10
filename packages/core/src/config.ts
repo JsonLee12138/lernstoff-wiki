@@ -69,7 +69,7 @@ export const DEFAULT_SOCRATIC_CONFIG = SocraticConfigSchema.parse({});
 export const DEFAULT_SCRATCHPAD_CONFIG = ScratchpadConfigSchema.parse({});
 
 export const LernstoffConfigSchema = z.object({
-  version: z.string().default("2.0.0"),
+  version: z.string().default("0.1.0-beta.1"),
   server: ServerConfigSchema.default(DEFAULT_SERVER_CONFIG),
   paths: PathsConfigSchema.default(DEFAULT_PATHS_CONFIG),
   models: ModelsConfigSchema.default(DEFAULT_MODELS_CONFIG),

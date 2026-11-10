@@ -1,7 +1,7 @@
 class Lernstoff < Formula
   desc "Headless Cognitive Selective Note-Taking Engine & Daemon for AI Agents and Obsidian"
   homepage "https://github.com/jsonlee/lernstoff-wiki"
-  url "https://registry.npmjs.org/@lernstoff/cli/-/cli-2.0.0.tgz"
+  url "https://registry.npmjs.org/@lernstoff/cli/-/cli-0.1.0-beta.1.tgz"
   license "MIT"
 
   depends_on "node@22"

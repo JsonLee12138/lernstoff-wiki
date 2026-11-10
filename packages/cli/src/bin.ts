@@ -330,7 +330,7 @@ async function main() {
 
     default: {
       console.log(`
-🧠 lernstoff-wiki (v2.0.0) - Headless Cognitive Selective Note-Taking Engine
+🧠 lernstoff-wiki (v0.1.0-beta.1) - Headless Cognitive Selective Note-Taking Engine
 
 Usage:
   lernstoff init [--vault <path>]

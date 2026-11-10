@@ -25,7 +25,7 @@ describe("Obsidian Plugin DaemonClient & Settings Synchronization", () => {
 
   it("loads config with zero-config out-of-the-box defaults", () => {
     const config = client.loadLocalConfig();
-    expect(config.version).toBe("2.0.0");
+    expect(config.version).toBe("0.1.0-beta.1");
     expect(config.server.port).toBe(8188);
     expect(config.gate.tauOff).toBe(0.35);
     expect(config.gate.tauCore).toBe(0.65);
