@@ -1,6 +1,6 @@
 {
   "name": "@lernstoff/obsidian-plugin",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.3",
   "private": true,
   "main": "dist/main.js",
   "scripts": {

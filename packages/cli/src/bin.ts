@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import {
   initVault,
   loadConfig,
@@ -25,6 +26,15 @@ import { runMcpStdio } from "./stdio-proxy.js";
 import { ServiceManager } from "./service-manager.js";
 import { AgentInstaller, DEFAULT_SKILL_MD } from "./agent-installer.js";
 import { searchCmd, inquiryCmd, scratchpadCmd, lintCmd } from "./cognitive-cmds.js";
+
+const require = createRequire(import.meta.url);
+const CLI_VERSION: string = (() => {
+  try {
+    return require("../package.json").version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 // Minimal helper to parse flags and arguments
 function parseArgs(args: string[]) {
@@ -54,6 +64,11 @@ function parseArgs(args: string[]) {
 async function main() {
   const rawArgs = process.argv.slice(2);
   const { flags, positional } = parseArgs(rawArgs);
+
+  if (flags.version || flags.v || positional[0] === "--version" || positional[0] === "-v") {
+    console.log(CLI_VERSION);
+    return;
+  }
 
   const vaultPath = resolve(typeof flags.vault === "string" ? flags.vault : process.cwd());
   const command = positional[0] || "help";
@@ -330,7 +345,7 @@ async function main() {
 
     default: {
       console.log(`
-🧠 lernstoff-wiki (v0.1.0-beta.1) - Headless Cognitive Selective Note-Taking Engine
+🧠 lernstoff-wiki (v${CLI_VERSION}) - Headless Cognitive Selective Note-Taking Engine
 
 Usage:
   lernstoff init [--vault <path>]

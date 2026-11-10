@@ -1,6 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { z } from "zod";
+
+function getCorePackageVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("../package.json");
+    return pkg.version || "1.0.0";
+  } catch {
+    return "1.0.0";
+  }
+}
+
+export const LERNSTOFF_VERSION = getCorePackageVersion();
 
 export const LERNSTOFF_DIR = ".lernstoff";
 export const CONFIG_FILE_NAME = "config.json";
@@ -69,7 +82,7 @@ export const DEFAULT_SOCRATIC_CONFIG = SocraticConfigSchema.parse({});
 export const DEFAULT_SCRATCHPAD_CONFIG = ScratchpadConfigSchema.parse({});
 
 export const LernstoffConfigSchema = z.object({
-  version: z.string().default("0.1.0-beta.1"),
+  version: z.string().default(LERNSTOFF_VERSION),
   server: ServerConfigSchema.default(DEFAULT_SERVER_CONFIG),
   paths: PathsConfigSchema.default(DEFAULT_PATHS_CONFIG),
   models: ModelsConfigSchema.default(DEFAULT_MODELS_CONFIG),

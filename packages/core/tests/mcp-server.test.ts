@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initVault } from "../src/vault-init.js";
+import { DEFAULT_LERNSTOFF_CONFIG } from "../src/config.js";
 import { QmdBridge } from "../src/qmd-bridge.js";
 import { createLernstoffMcpServer } from "../src/mcp-server.js";
 
@@ -72,7 +73,7 @@ describe("8-Tool MCP Superset & lernstoff:// Resource", () => {
     expect(res.content[0]?.type).toBe("text");
     const parsed = JSON.parse(res.content[0]?.text);
     expect(parsed.vaultPath).toBe(tempDir);
-    expect(parsed.version).toBe("0.1.0-beta.1");
+    expect(parsed.version).toBe(DEFAULT_LERNSTOFF_CONFIG.version);
     expect(parsed.metrics.openInquiries).toBeGreaterThanOrEqual(1);
   });
 

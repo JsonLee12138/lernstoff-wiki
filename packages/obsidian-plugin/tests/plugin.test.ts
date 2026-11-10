@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { initVault } from "@lernstoff/core";
+import { DEFAULT_LERNSTOFF_CONFIG } from "@lernstoff/core/config";
 import { DaemonClient } from "../src/daemon-client.js";
 
 describe("Obsidian Plugin DaemonClient & Settings Synchronization", () => {
@@ -25,7 +26,7 @@ describe("Obsidian Plugin DaemonClient & Settings Synchronization", () => {
 
   it("loads config with zero-config out-of-the-box defaults", () => {
     const config = client.loadLocalConfig();
-    expect(config.version).toBe("0.1.0-beta.1");
+    expect(config.version).toBe(DEFAULT_LERNSTOFF_CONFIG.version);
     expect(config.server.port).toBe(8188);
     expect(config.gate.tauOff).toBe(0.35);
     expect(config.gate.tauCore).toBe(0.65);
