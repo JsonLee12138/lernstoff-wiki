@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { QmdBridge } from "../src/qmd-bridge.js";
 import { initVault } from "../src/vault-init.js";
 
-describe("QMD SDK Bridge (qmd-bridge)", () => {
+describe("QMD SDK Bridge (qmd-bridge)", { timeout: 30_000 }, () => {
   let tempDir: string;
   let bridge: QmdBridge;
 

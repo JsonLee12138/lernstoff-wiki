@@ -1,4 +1,7 @@
 import { Plugin, Notice, type Editor } from "obsidian";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseScratchpad, formatScratchpad } from "@lernstoff/core/scratchpad";
 import { DaemonClient } from "./daemon-client.js";
 import { LernstoffSettingsTab } from "./settings-tab.js";
 
@@ -33,7 +36,11 @@ export default class LernstoffPlugin extends Plugin {
       id: "open-inquiry-tree",
       name: "Open Inquiry Tree (打开好奇心问题树)",
       callback: async () => {
-        const file = this.app.vault.getAbstractFileByPath(this.client.config.paths.inquiriesFile);
+        let file = this.app.vault.getAbstractFileByPath(this.client.config.paths.inquiriesFile);
+        if (!file) {
+          await this.client.ensureStarterTemplates();
+          file = this.app.vault.getAbstractFileByPath(this.client.config.paths.inquiriesFile);
+        }
         if (file) {
           await this.app.workspace.getLeaf().openFile(file as any);
         } else {
@@ -46,7 +53,11 @@ export default class LernstoffPlugin extends Plugin {
       id: "open-scratchpad",
       name: "Open Scratchpad (打开闪念缓冲池)",
       callback: async () => {
-        const file = this.app.vault.getAbstractFileByPath(this.client.config.paths.scratchpadFile);
+        let file = this.app.vault.getAbstractFileByPath(this.client.config.paths.scratchpadFile);
+        if (!file) {
+          await this.client.ensureStarterTemplates();
+          file = this.app.vault.getAbstractFileByPath(this.client.config.paths.scratchpadFile);
+        }
         if (file) {
           await this.app.workspace.getLeaf().openFile(file as any);
         } else {
@@ -88,6 +99,7 @@ export default class LernstoffPlugin extends Plugin {
           new Notice("Please select text in the editor first.");
           return;
         }
+        let handled = false;
         try {
           const res = await fetch(`http://127.0.0.1:${this.client.port}/api/scratchpad`, {
             method: "POST",
@@ -96,9 +108,34 @@ export default class LernstoffPlugin extends Plugin {
           });
           if (res.ok) {
             new Notice(`Deferred to Scratchpad: "${selected.slice(0, 30)}..."`);
+            handled = true;
           }
-        } catch {
-          new Notice("Failed to contact Lernstoff Daemon.");
+        } catch {}
+
+        if (!handled) {
+          // Direct local fallback write to scratchpad file if daemon offline
+          try {
+            const scratchpadPath = join(
+              this.client.vaultPath,
+              this.client.config.paths.scratchpadFile,
+            );
+            if (existsSync(scratchpadPath)) {
+              const content = readFileSync(scratchpadPath, "utf-8");
+              const entries = parseScratchpad(content);
+              entries.push({
+                firstSeen: new Date().toISOString().slice(0, 10),
+                claim: selected,
+                hitCount: 1,
+                relatedEntities: [],
+                sources: ["manual"],
+                status: "DEFERRED",
+              });
+              writeFileSync(scratchpadPath, formatScratchpad(entries), "utf-8");
+              new Notice(`Deferred to Scratchpad (local): "${selected.slice(0, 30)}..."`);
+            }
+          } catch (e: any) {
+            new Notice(`Failed to defer to scratchpad: ${e.message}`);
+          }
         }
       },
     });
@@ -151,7 +188,18 @@ export default class LernstoffPlugin extends Plugin {
       callback: async () => {
         new Notice("Restarting Lernstoff Daemon...");
         const ok = await this.client.restartDaemon();
-        new Notice(ok ? "🟢 Lernstoff Daemon online." : "❌ Failed to restart Daemon.");
+        if (ok) {
+          if (this.client.lastPortFallback) {
+            const { requestedPort, actualPort } = this.client.lastPortFallback;
+            new Notice(
+              `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
+            );
+          } else {
+            new Notice("🟢 Lernstoff Daemon online.");
+          }
+        } else {
+          new Notice("❌ Failed to restart Daemon.");
+        }
       },
     });
 
@@ -161,11 +209,18 @@ export default class LernstoffPlugin extends Plugin {
       callback: async () => {
         new Notice("Starting Lernstoff Daemon...");
         const ok = await this.client.startDaemon();
-        new Notice(
-          ok
-            ? "🟢 Lernstoff Daemon online."
-            : "❌ Failed to start Daemon. Check .lernstoff/daemon.log",
-        );
+        if (ok) {
+          if (this.client.lastPortFallback) {
+            const { requestedPort, actualPort } = this.client.lastPortFallback;
+            new Notice(
+              `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
+            );
+          } else {
+            new Notice("🟢 Lernstoff Daemon online.");
+          }
+        } else {
+          new Notice("❌ Failed to start Daemon. Check .lernstoff/daemon.log");
+        }
       },
     });
 
@@ -173,8 +228,8 @@ export default class LernstoffPlugin extends Plugin {
       id: "stop-daemon",
       name: "Stop Background Daemon (停止后台认知引擎)",
       callback: async () => {
-        await this.client.stopDaemon();
-        new Notice("🛑 Stopped Lernstoff Daemon.");
+        const ok = await this.client.stopDaemon();
+        new Notice(ok ? "🛑 Stopped Lernstoff Daemon." : "❌ Failed to stop Lernstoff Daemon.");
       },
     });
 
@@ -188,7 +243,7 @@ export default class LernstoffPlugin extends Plugin {
     this.client?.destroy();
   }
 
-  private updateStatusBar(): void {
+  public updateStatusBar(): void {
     if (!this.statusBarEl) return;
     const isRunning = this.client.isRunning;
     const m = this.client.metrics;
@@ -202,8 +257,17 @@ export default class LernstoffPlugin extends Plugin {
     const inq = m ? `${m.openInquiries} Inquiries` : "Active";
     const scratch = m
       ? `${m.scratchpadTotal} Scratchpad (${m.scratchpadPromotionsReady} Ready)`
-      : "";
-    this.statusBarEl.setText(`🧠 Lernstoff: ${inq} | ${scratch} | 🟢`);
-    this.statusBarEl.title = `Running on port ${this.client.port}. Click to open settings.`;
+      : "0 Scratchpad (0 Ready)";
+    const ratio = m && typeof m.noiseFilteredRatio === "number" ? m.noiseFilteredRatio : 0;
+    const noiseFilteredText = `${Math.round(ratio * 100)}% filtered`;
+    const pendingHint =
+      this.client.config.server.port !== this.client.port
+        ? ` | ⚠️ Restart -> :${this.client.config.server.port}`
+        : "";
+
+    this.statusBarEl.setText(
+      `🧠 Lernstoff: ${inq} | ${scratch} | ${noiseFilteredText} | 🟢${pendingHint}`,
+    );
+    this.statusBarEl.title = `Running on port ${this.client.port}${pendingHint}. Click to open settings.`;
   }
 }

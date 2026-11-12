@@ -4,6 +4,7 @@ dist/
 assets/
 .DS_Store
 *.log
+*.tgz
 
 # Vault & Obsidian runtime states
 .lernstoff/

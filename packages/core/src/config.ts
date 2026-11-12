@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { z } from "zod";
 
@@ -7,9 +7,9 @@ function getCorePackageVersion(): string {
   try {
     const require = createRequire(import.meta.url);
     const pkg = require("../package.json");
-    return pkg.version || "1.0.0";
+    return pkg.version || "0.1.0-beta.6";
   } catch {
-    return "1.0.0";
+    return "0.1.0-beta.6";
   }
 }
 
@@ -99,7 +99,21 @@ export type GateConfig = z.infer<typeof GateConfigSchema>;
 export type SocraticConfig = z.infer<typeof SocraticConfigSchema>;
 export type ScratchpadConfig = z.infer<typeof ScratchpadConfigSchema>;
 
-export const DEFAULT_LERNSTOFF_CONFIG: LernstoffConfig = LernstoffConfigSchema.parse({});
+export const DEFAULT_LERNSTOFF_CONFIG: Readonly<LernstoffConfig> = Object.freeze(
+  LernstoffConfigSchema.parse({}),
+);
+
+function cloneDefaultConfig(): LernstoffConfig {
+  return structuredClone(DEFAULT_LERNSTOFF_CONFIG);
+}
+
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+  renameSync(tmpPath, filePath);
+}
 
 export function getConfigPath(vaultPath: string): string {
   return join(vaultPath, LERNSTOFF_DIR, CONFIG_FILE_NAME);
@@ -108,17 +122,17 @@ export function getConfigPath(vaultPath: string): string {
 export function loadConfig(vaultPath: string): LernstoffConfig {
   const configPath = getConfigPath(vaultPath);
   if (!existsSync(configPath)) {
-    return DEFAULT_LERNSTOFF_CONFIG;
+    return cloneDefaultConfig();
   }
 
   try {
     const raw = readFileSync(configPath, "utf-8").trim();
-    if (!raw) return DEFAULT_LERNSTOFF_CONFIG;
+    if (!raw) return cloneDefaultConfig();
     const parsed = JSON.parse(raw);
     return LernstoffConfigSchema.parse(parsed);
   } catch (err) {
     console.warn(`[Config] Failed to parse ${configPath}, falling back to defaults:`, err);
-    return DEFAULT_LERNSTOFF_CONFIG;
+    return cloneDefaultConfig();
   }
 }
 
@@ -136,9 +150,7 @@ export function saveConfig(vaultPath: string, updates: Partial<LernstoffConfig>)
   };
 
   const validated = LernstoffConfigSchema.parse(merged);
-  const dir = join(vaultPath, LERNSTOFF_DIR);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(getConfigPath(vaultPath), JSON.stringify(validated, null, 2), "utf-8");
+  atomicWriteJson(getConfigPath(vaultPath), validated);
   return validated;
 }
 
@@ -188,22 +200,15 @@ export function setConfigValue(
   target[segments[segments.length - 1]!] = parsedValue;
 
   const validated = LernstoffConfigSchema.parse(clone);
-  const dir = join(vaultPath, LERNSTOFF_DIR);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(getConfigPath(vaultPath), JSON.stringify(validated, null, 2), "utf-8");
+  atomicWriteJson(getConfigPath(vaultPath), validated);
   return validated;
 }
 
 export function resetConfigToDefaults(vaultPath: string, section?: string): LernstoffConfig {
   if (!section) {
-    const dir = join(vaultPath, LERNSTOFF_DIR);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      getConfigPath(vaultPath),
-      JSON.stringify(DEFAULT_LERNSTOFF_CONFIG, null, 2),
-      "utf-8",
-    );
-    return DEFAULT_LERNSTOFF_CONFIG;
+    const defaults = cloneDefaultConfig();
+    atomicWriteJson(getConfigPath(vaultPath), defaults);
+    return defaults;
   }
 
   const current = loadConfig(vaultPath);
@@ -214,11 +219,9 @@ export function resetConfigToDefaults(vaultPath: string, section?: string): Lern
 
   const updated = {
     ...current,
-    [section]: (DEFAULT_LERNSTOFF_CONFIG as any)[section],
+    [section]: cloneDefaultConfig()[section as keyof LernstoffConfig],
   };
   const validated = LernstoffConfigSchema.parse(updated);
-  const dir = join(vaultPath, LERNSTOFF_DIR);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(getConfigPath(vaultPath), JSON.stringify(validated, null, 2), "utf-8");
+  atomicWriteJson(getConfigPath(vaultPath), validated);
   return validated;
 }

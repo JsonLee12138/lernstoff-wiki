@@ -57,8 +57,12 @@ export interface InquiryItem {
 }
 
 export interface ConsolidateScratchpadInput {
-  action: "inspect" | "promote" | "gc";
+  action: "inspect" | "promote" | "gc" | "add";
   itemIds?: string[];
+  claim?: string;
+  text?: string;
+  relatedEntities?: string[];
+  sources?: string[];
 }
 
 export interface ConsolidateScratchpadResult {
@@ -110,6 +114,11 @@ export class VaultOps {
 
   public setWatcher(watcher: VaultWatcher): void {
     this.watcher = watcher;
+  }
+
+  public updateConfig(newConfig: LernstoffConfig): void {
+    this.config = newConfig;
+    this.qmdBridge.updateConfig(newConfig);
   }
 
   /**
@@ -179,6 +188,37 @@ export class VaultOps {
     const fullPath = join(this.vaultPath, relPath);
     const nowIso = new Date().toISOString();
 
+    let originalCreatedAt = nowIso;
+    let existingBody = "";
+    if (operation === "AMEND_EXISTING" && existsSync(fullPath)) {
+      try {
+        const rawExisting = readFileSync(fullPath, "utf-8");
+        const mCreated = rawExisting.match(/^created_at:\s*["']?([^"'\n\r]+)["']?/m);
+        if (mCreated && mCreated[1]) {
+          originalCreatedAt = mCreated[1].trim();
+        }
+        const sections = rawExisting.split("---");
+        if (sections.length >= 3) {
+          let rest = sections.slice(2).join("---").trim();
+          rest = rest.replace(/^#\s+[^\n]+\n+/, "");
+          rest = rest.replace(/^>\s*\[![A-Z]+\][^\n]*\n(?:>[^\n]*\n)*/gm, "");
+          const propsIdx = rest.indexOf("### Associated Propositions");
+          if (propsIdx >= 0) {
+            existingBody = rest.slice(0, propsIdx).trim();
+          } else {
+            const srcIdx = rest.indexOf("### Sources");
+            if (srcIdx >= 0) {
+              existingBody = rest.slice(0, srcIdx).trim();
+            } else {
+              existingBody = rest.trim();
+            }
+          }
+        }
+      } catch {
+        // ignore read error
+      }
+    }
+
     // Mark programmatic write in watcher to avoid loop
     if (this.watcher) {
       this.watcher.markRecentWrite(relPath);
@@ -194,7 +234,7 @@ export class VaultOps {
       ...inquiryRefs.map((ref) => `  - ${JSON.stringify(ref)}`),
       "sources:",
       ...sources.map((src) => `  - ${JSON.stringify(src)}`),
-      `created_at: ${nowIso}`,
+      `created_at: ${operation === "AMEND_EXISTING" ? originalCreatedAt : nowIso}`,
       `updated_at: ${nowIso}`,
       "---",
       "",
@@ -225,13 +265,18 @@ export class VaultOps {
     const sourcesSection =
       sources.length > 0 ? ["### Sources", ...sources.map((s) => `- ${s}`), ""] : [];
 
+    const combinedBody =
+      operation === "AMEND_EXISTING" && existingBody && !markdownBody.includes(existingBody)
+        ? `${existingBody}\n\n${markdownBody.trim()}`
+        : markdownBody.trim();
+
     const noteContent = [
       ...frontmatterLines,
       `# ${propositionTitle}`,
       "",
       ...socraticCallout,
       ...amendmentCallout,
-      markdownBody.trim(),
+      combinedBody,
       "",
       ...outboundLinksLines,
       ...sourcesSection,
@@ -246,6 +291,25 @@ export class VaultOps {
       if (existsSync(logFile)) {
         const logEntry = `- [${nowIso.slice(0, 16)}] **${operation}**: [[${basename(relPath, ".md")}]] (${inquiryRefs.join(", ") || "no-inquiry"})\n`;
         appendFileSync(logFile, logEntry, "utf-8");
+      }
+    } catch {
+      // Non-critical
+    }
+
+    // Update wiki/index.md with newly crystallized proposition note
+    try {
+      const indexFile = join(this.vaultPath, this.config.paths.indexFile);
+      mkdirSync(dirname(indexFile), { recursive: true });
+      const indexContent = existsSync(indexFile)
+        ? readFileSync(indexFile, "utf-8")
+        : "# Wiki Index\n";
+      const noteSlug = basename(relPath, ".md");
+      if (!indexContent.includes(noteSlug)) {
+        const entry = `\n- [[${noteSlug}]] - ${propositionTitle}`;
+        writeFileSync(indexFile, indexContent.trimEnd() + entry + "\n", "utf-8");
+        if (this.watcher) {
+          this.watcher.markRecentWrite(this.config.paths.indexFile);
+        }
       }
     } catch {
       // Non-critical
@@ -445,18 +509,45 @@ export class VaultOps {
     const content = readFileSync(scratchpadFile, "utf-8");
     const entries = parseScratchpad(content);
 
-    const promotions = entries.filter((e) => {
-      const uniqueSources = new Set(e.sources).size;
-      return (
-        e.status === "READY_FOR_PROMOTION" ||
-        (e.hitCount >= this.config.scratchpad.promoteHitCount &&
-          uniqueSources >= this.config.scratchpad.promoteMinSources)
-      );
-    });
+    const getPromotions = (list: ScratchpadEntry[]) =>
+      list.filter((e) => {
+        if (e.status === "PROMOTED") return false;
+        const uniqueSources = new Set(e.sources).size;
+        return (
+          e.status === "READY_FOR_PROMOTION" ||
+          (e.hitCount >= this.config.scratchpad.promoteHitCount &&
+            uniqueSources >= this.config.scratchpad.promoteMinSources)
+        );
+      });
+
+    const promotions = getPromotions(entries);
 
     if (input.action === "inspect") {
       return {
         promotions,
+        activeCount: entries.length,
+      };
+    }
+
+    if (input.action === "add") {
+      const claim = (input.claim || input.text || "").trim();
+      if (!claim) {
+        throw new Error("Claim text is required to add scratchpad entry.");
+      }
+      entries.push({
+        firstSeen: new Date().toISOString().slice(0, 10),
+        claim,
+        hitCount: 1,
+        relatedEntities: input.relatedEntities || [],
+        sources: input.sources || ["manual"],
+        status: "DEFERRED",
+      });
+      if (this.watcher) {
+        this.watcher.markRecentWrite(this.config.paths.scratchpadFile);
+      }
+      writeFileSync(scratchpadFile, formatScratchpad(entries), "utf-8");
+      return {
+        promotions: getPromotions(entries),
         activeCount: entries.length,
       };
     }
@@ -475,7 +566,7 @@ export class VaultOps {
       }
       writeFileSync(scratchpadFile, formatScratchpad(updatedEntries), "utf-8");
       return {
-        promotions,
+        promotions: getPromotions(updatedEntries),
         activeCount: updatedEntries.length,
       };
     }
@@ -484,7 +575,40 @@ export class VaultOps {
       const archiveDir = join(this.vaultPath, ".lernstoff", "archive");
       mkdirSync(archiveDir, { recursive: true });
 
-      const pruneResult = pruneExpiredScratchpad(entries, this.config.scratchpad.ttlDays);
+      const referencedTerms = new Set<string>();
+      const conceptsDir = join(this.vaultPath, this.config.paths.conceptsDir);
+      if (existsSync(conceptsDir)) {
+        const cFiles = readdirSync(conceptsDir).filter((f) => f.endsWith(".md"));
+        for (const cf of cFiles) {
+          try {
+            const cContent = readFileSync(join(conceptsDir, cf), "utf-8");
+            referencedTerms.add(basename(cf, ".md"));
+            const linkMatches = cContent.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g);
+            for (const lm of linkMatches) {
+              if (lm[1]) referencedTerms.add(lm[1].trim());
+            }
+            const titleMatch =
+              cContent.match(/^title:\s*["']?([^"'\n\r]+)["']?/m) || cContent.match(/^#\s+(.+)$/m);
+            if (titleMatch && titleMatch[1]) {
+              referencedTerms.add(titleMatch[1].trim());
+            }
+            for (const line of cContent.split("\n")) {
+              const clean = line.replace(/^[#\-*>\s]+/, "").trim();
+              if (clean.length > 3) {
+                referencedTerms.add(clean);
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      const pruneResult = pruneExpiredScratchpad(
+        entries,
+        this.config.scratchpad.ttlDays,
+        referencedTerms,
+      );
 
       if (pruneResult.expired.length > 0) {
         const archiveFile = join(archiveDir, "decayed.jsonl");
@@ -498,7 +622,7 @@ export class VaultOps {
       writeFileSync(scratchpadFile, formatScratchpad(pruneResult.active), "utf-8");
 
       return {
-        promotions: pruneResult.active.filter((e) => e.status === "READY_FOR_PROMOTION"),
+        promotions: getPromotions(pruneResult.active),
         activeCount: pruneResult.active.length,
         decayedArchivedCount: pruneResult.expired.length,
       };
@@ -586,20 +710,81 @@ export class VaultOps {
           const a = nodesData[i]!;
           const b = nodesData[j]!;
 
-          // Check if either notes text explicitly signals contradiction or polarity divergence
-          const hasContradictText =
-            a.content.toLowerCase().includes("contrary to") ||
-            b.content.toLowerCase().includes("contrary to") ||
-            a.content.toLowerCase().includes("contradicts") ||
-            b.content.toLowerCase().includes("contradicts");
-
-          // Check if already connected by a typed 'contradicts' edge
+          // Check if already connected by an explicit typed 'contradicts' edge in either direction
           const edgesA = graph.relations.get(a.id) || [];
-          const hasContradictsEdge = edgesA.some(
-            (e) => e.target === b.id && e.relation === "contradicts",
-          );
+          const edgesB = graph.relations.get(b.id) || [];
+          const hasContradictsEdge =
+            edgesA.some((e) => e.target === b.id && e.relation === "contradicts") ||
+            edgesB.some((e) => e.target === a.id && e.relation === "contradicts");
 
-          if (hasContradictText && !hasContradictsEdge) {
+          if (hasContradictsEdge) {
+            continue;
+          }
+
+          // Strip relations section so "- contradicts [[...]]" isn't treated as divergent prose
+          const stripRelations = (text: string) =>
+            text.replace(/###\s*Associated Propositions[\s\S]*?(?:###|$)/gi, "").trim();
+
+          const proseA = stripRelations(a.content).toLowerCase();
+          const proseB = stripRelations(b.content).toLowerCase();
+
+          // Check if prose explicitly mentions the other note or expresses contrary/contradiction
+          const aMentionsB =
+            proseA.includes(`[[${b.id.toLowerCase()}]]`) ||
+            proseA.includes(b.id.toLowerCase().replace(/-/g, " "));
+          const bMentionsA =
+            proseB.includes(`[[${a.id.toLowerCase()}]]`) ||
+            proseB.includes(a.id.toLowerCase().replace(/-/g, " "));
+
+          const aHasContrary = proseA.includes("contrary to") || proseA.includes("contradict");
+          const bHasContrary = proseB.includes("contrary to") || proseB.includes("contradict");
+
+          // Check topic overlap
+          const getKeywords = (text: string) => {
+            const words = text.toLowerCase().match(/\b[a-z0-9_\u4e00-\u9fa5]{3,}\b/gu) || [];
+            return new Set(
+              words.filter(
+                (w) =>
+                  ![
+                    "note",
+                    "title",
+                    "true",
+                    "false",
+                    "this",
+                    "that",
+                    "with",
+                    "from",
+                    "reduces",
+                    "causes",
+                  ].includes(w),
+              ),
+            );
+          };
+          const wordsA = getKeywords(proseA);
+          const wordsB = getKeywords(proseB);
+          let overlap = 0;
+          for (const w of wordsA) {
+            if (wordsB.has(w)) overlap++;
+          }
+
+          const shareInquiry = (() => {
+            const inqRegex = /inquiries:\s*\n((?:\s*-\s*[^\n]+\n)*)/i;
+            const matchA = a.content.match(inqRegex);
+            const matchB = b.content.match(inqRegex);
+            const inqsA = matchA ? matchA[1]?.match(/#q-\d+/g) || [] : [];
+            const inqsB = new Set(matchB ? matchB[1]?.match(/#q-\d+/g) || [] : []);
+            return inqsA.some((iq) => inqsB.has(iq));
+          })();
+
+          // Latent contradiction condition:
+          // 1) Either note directly mentions the other in contrary prose: (aMentionsB && aHasContrary) || (bMentionsA && bHasContrary)
+          // 2) OR they share significant topic overlap (>=2 shared keywords) or share an inquiry, AND one has contrary/contradiction prose
+          const isContradiction =
+            (aMentionsB && aHasContrary) ||
+            (bMentionsA && bHasContrary) ||
+            ((overlap >= 2 || shareInquiry) && (aHasContrary || bHasContrary));
+
+          if (isContradiction) {
             contradictions.push({
               noteA: a.id,
               noteB: b.id,

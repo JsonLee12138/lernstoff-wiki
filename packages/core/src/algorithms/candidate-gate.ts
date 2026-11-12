@@ -72,14 +72,21 @@ export const GATE_LANGUAGE_PROFILES: Readonly<Record<string, GateLanguageProfile
   },
 };
 
-export function gateProfileFor(language?: string | null): GateLanguageProfile {
-  if (!language) return GATE_LANGUAGE_PROFILES.en!;
-  const key = language.trim().toLowerCase();
-  return (
-    GATE_LANGUAGE_PROFILES[key] ??
-    GATE_LANGUAGE_PROFILES[key.split(/[-_]/)[0]!] ??
-    GATE_LANGUAGE_PROFILES.en!
-  );
+const CJK_CHAR_REGEX = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u;
+
+export function gateProfileFor(language?: string | null, textHint?: string): GateLanguageProfile {
+  if (language && language.trim().toLowerCase() !== "auto") {
+    const key = language.trim().toLowerCase();
+    return (
+      GATE_LANGUAGE_PROFILES[key] ??
+      GATE_LANGUAGE_PROFILES[key.split(/[-_]/)[0]!] ??
+      GATE_LANGUAGE_PROFILES.en!
+    );
+  }
+  if (textHint && CJK_CHAR_REGEX.test(textHint)) {
+    return GATE_LANGUAGE_PROFILES.zh!;
+  }
+  return GATE_LANGUAGE_PROFILES.en!;
 }
 
 const ENUM_MIN_COMMAS = 2;
@@ -147,6 +154,7 @@ export function classifyCandidatePosition(
 ): PositionClassification {
   const needle = needleOf(name, profile);
   if (!needle) return "absent";
+  needle.lastIndex = 0;
 
   // Check if it appears at all
   let match: RegExpExecArray | null;
@@ -156,6 +164,7 @@ export function classifyCandidatePosition(
       occurrences.push({ start: match.index, end: match.index + match[0].length });
     }
   }
+  needle.lastIndex = 0;
 
   if (occurrences.length === 0) return "absent";
 
@@ -211,7 +220,12 @@ export function classifyCandidatePosition(
     if (separatorsCount >= ENUM_MIN_COMMAS) {
       // Find chunk holding name
       const chunks = sentence.split(SEPARATORS);
-      const needleChunk = chunks.find((c) => needle.test(c));
+      const needleChunk = chunks.find((c) => {
+        needle.lastIndex = 0;
+        const res = needle.test(c);
+        needle.lastIndex = 0;
+        return res;
+      });
       if (needleChunk) {
         const isChar = profile.script === "char";
         const chunkLen = isChar
@@ -225,10 +239,12 @@ export function classifyCandidatePosition(
     }
 
     // If we reached here, this occurrence is genuine prose!
+    needle.lastIndex = 0;
     return "prose";
   }
 
   // If all occurrences were inside parentheses or short enumerations:
+  needle.lastIndex = 0;
   return "aside";
 }
 
@@ -237,10 +253,10 @@ export function evaluateGate1<T extends CandidateItem>(
   sourceText: string,
   language?: string | null,
 ): Gate1Evaluation<T>[] {
-  const profile = gateProfileFor(language);
   const explicitLinks = extractExplicitWikilinks(sourceText);
 
   return candidates.map((cand) => {
+    const profile = gateProfileFor(language, `${sourceText} ${cand.entityName}`);
     const normalizedName = cand.entityName.trim().toLowerCase();
     const isExplicitlyLinked = explicitLinks.has(normalizedName);
 

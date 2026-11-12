@@ -65,6 +65,10 @@ export class HippocampalPipeline {
     this.config = config || loadConfig(vaultPath);
   }
 
+  public updateConfig(newConfig: LernstoffConfig): void {
+    this.config = newConfig;
+  }
+
   public async probeDelta<T extends CandidateItem>(
     params: ProbeDeltaParams<T>,
   ): Promise<ProbeDeltaOutput<T>> {
@@ -211,13 +215,24 @@ export class HippocampalPipeline {
       }
 
       for (const ppr of pprHits) {
-        const path = `wiki/concepts/${ppr.nodeId}.md`;
+        const path = join(this.config.paths.conceptsDir, `${ppr.nodeId}.md`);
         if (!seenPaths.has(path)) {
           seenPaths.add(path);
+          let snippet = "";
+          let title = ppr.nodeId;
+          const fullPath = join(this.vaultPath, path);
+          if (existsSync(fullPath)) {
+            try {
+              const text = readFileSync(fullPath, "utf-8");
+              const titleMatch = text.match(/^#\s+(.+)$/m) || text.match(/^title:\s*(.+)$/m);
+              if (titleMatch) title = titleMatch[1]!.replace(/^["']|["']$/g, "").trim();
+              snippet = text.slice(0, 300).trim();
+            } catch {}
+          }
           recalledNotes.push({
             path,
-            title: ppr.nodeId,
-            snippet: "",
+            title,
+            snippet,
             score: ppr.score,
           });
         }
@@ -288,6 +303,19 @@ export class HippocampalPipeline {
     const totalDiscarded = discardedGate1 + discardedGate2 + discardedGate3 + deferredScratchpad;
     const noiseFilteredRatio =
       totalCandidates > 0 ? Math.round((totalDiscarded / totalCandidates) * 100) / 100 : 0;
+
+    // Append gate filtering audit record into logFile
+    try {
+      const logFile = join(this.vaultPath, this.config.paths.logFile);
+      if (existsSync(logFile) && totalCandidates > 0) {
+        const timestamp = new Date().toISOString();
+        const logLine = `- [${timestamp.slice(0, 19)}] **PROBE_DELTA**: total=${totalCandidates}, filtered=${Math.round(noiseFilteredRatio * 100)}% (gate1=${discardedGate1}, gate2=${discardedGate2}, gate3=${discardedGate3}, scratchpad=${deferredScratchpad}), survivors=${survivors.length}, noise_filtered_ratio: ${noiseFilteredRatio}\n`;
+        const { appendFileSync } = await import("node:fs");
+        appendFileSync(logFile, logLine, "utf-8");
+      }
+    } catch (err) {
+      console.warn("[HippocampalPipeline] Failed to log probe stats:", err);
+    }
 
     return {
       survivors,

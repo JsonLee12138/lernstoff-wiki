@@ -35,21 +35,22 @@ export async function runMcpStdio(vaultPath: string): Promise<void> {
         });
 
         const contentType = res.headers.get("content-type") || "";
-        if (contentType.includes("json")) {
-          const bodyText = await res.text();
-          if (bodyText) {
-            process.stdout.write(`${bodyText}\n`);
-          }
-        } else {
-          // Streamable response
-          const reader = res.body?.getReader();
-          if (reader) {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              process.stdout.write(value);
+        const bodyText = await res.text();
+
+        if (contentType.includes("text/event-stream") || bodyText.includes("data:")) {
+          // Unwrap Server-Sent Events (SSE) data lines to yield pure JSON-RPC onto stdout
+          const lines = bodyText.split("\n");
+          for (const rawLine of lines) {
+            const trimmedLine = rawLine.trim();
+            if (trimmedLine.startsWith("data:")) {
+              const dataContent = trimmedLine.slice(5).trim();
+              if (dataContent && dataContent !== "[DONE]") {
+                process.stdout.write(`${dataContent}\n`);
+              }
             }
           }
+        } else if (bodyText.trim()) {
+          process.stdout.write(`${bodyText.trim()}\n`);
         }
       } catch (err: any) {
         const errorRpc = {

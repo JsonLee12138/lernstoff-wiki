@@ -10,7 +10,8 @@
   "type": "module",
   "scripts": {
     "check": "vp check",
-    "test": "vp test",
+    "test": "vp test --exclude 'e2e/**'",
+    "test:e2e": "vp test --dir e2e --no-file-parallelism --testTimeout 30000 --hookTimeout 30000 --run",
     "build": "tsdown -W && node scripts/sync-plugin-assets.mjs",
     "format": "vp fmt",
     "lint": "vp lint"

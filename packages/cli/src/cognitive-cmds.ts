@@ -1,5 +1,5 @@
 import { resolve, join } from "node:path";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import {
   VaultOps,
   QmdBridge,
@@ -42,6 +42,16 @@ export async function searchCmd(
   const config = loadConfig(absVault);
   const limit = options.limit || 5;
 
+  const queries =
+    options.lex && !options.vec
+      ? [{ type: "lex" as const, query }]
+      : options.vec && !options.lex
+        ? [{ type: "vec" as const, query }]
+        : [
+            { type: "lex" as const, query },
+            { type: "vec" as const, query },
+          ];
+
   let daemonInfo = getRunningDaemonInfo(absVault);
   let searchResult: any;
 
@@ -51,7 +61,7 @@ export async function searchCmd(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          queries: [{ type: options.lex ? "lex" : "vec", query }],
+          queries,
           limit,
         }),
       });
@@ -65,11 +75,36 @@ export async function searchCmd(
     const bridge = new QmdBridge({ vaultPath: absVault, config });
     try {
       searchResult = await bridge.search({
-        queries: [{ type: options.lex ? "lex" : "vec", query }],
+        queries,
         limit,
       });
     } finally {
       await bridge.close();
+    }
+  }
+
+  const hits = Array.isArray(searchResult) ? searchResult : searchResult?.directHits || [];
+  if (hits.length === 0) {
+    // Scan concepts dir as fallback
+    const conceptsDir = join(absVault, config.paths.conceptsDir);
+    if (existsSync(conceptsDir)) {
+      const qLower = query.toLowerCase();
+      const files = readdirSync(conceptsDir).filter((f) => f.endsWith(".md"));
+      for (const f of files) {
+        try {
+          const text = readFileSync(join(conceptsDir, f), "utf-8");
+          if (text.toLowerCase().includes(qLower)) {
+            hits.push({
+              file: join(config.paths.conceptsDir, f),
+              displayPath: join(config.paths.conceptsDir, f),
+              title: f.replace(/\.md$/i, ""),
+              snippet: text.slice(0, 150),
+              score: 0.8,
+            });
+          }
+        } catch {}
+      }
+      searchResult = hits;
     }
   }
 
@@ -78,7 +113,6 @@ export async function searchCmd(
     return searchResult;
   }
 
-  const hits = Array.isArray(searchResult) ? searchResult : searchResult.directHits || [];
   if (hits.length === 0) {
     console.log(`No results found for "${query}".`);
     return hits;

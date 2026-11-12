@@ -10,6 +10,11 @@ export default defineConfig({
   copy: ["manifest.json", "styles.css"],
   alias: {
     "@lernstoff/core/config": resolve(import.meta.dirname, "../core/src/config.ts"),
+    "@lernstoff/core/vault-init": resolve(import.meta.dirname, "../core/src/vault-init.ts"),
+    "@lernstoff/core/scratchpad": resolve(
+      import.meta.dirname,
+      "../core/src/algorithms/scratchpad-gc.ts",
+    ),
   },
   deps: {
     neverBundle: ["obsidian"],

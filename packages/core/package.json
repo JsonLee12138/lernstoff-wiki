@@ -28,6 +28,16 @@
       "types": "./dist/config.d.mts",
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
+    },
+    "./vault-init": {
+      "types": "./dist/vault-init.d.mts",
+      "import": "./dist/vault-init.mjs",
+      "default": "./dist/vault-init.mjs"
+    },
+    "./scratchpad": {
+      "types": "./dist/algorithms/scratchpad-gc.d.mts",
+      "import": "./dist/algorithms/scratchpad-gc.mjs",
+      "default": "./dist/algorithms/scratchpad-gc.mjs"
     }
   },
   "publishConfig": {

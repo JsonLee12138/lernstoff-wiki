@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative, isAbsolute } from "node:path";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { type LernstoffConfig, loadConfig } from "./config.js";
@@ -17,6 +17,16 @@ export interface CreateLernstoffMcpServerOptions {
   vaultOps?: VaultOps;
   pipeline?: HippocampalPipeline;
   watcher?: VaultWatcher;
+}
+
+function resolveSafeVaultPath(vaultRoot: string, userPath: string): string {
+  const resolvedVault = resolve(vaultRoot);
+  const target = resolve(resolvedVault, userPath);
+  const rel = relative(resolvedVault, target);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`Access denied: path '${userPath}' escapes Vault root directory.`);
+  }
+  return target;
 }
 
 export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOptions): McpServer {
@@ -265,7 +275,13 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
     },
     async (args) => {
       const queries =
-        args.searches || (args.query ? [{ type: "vec" as const, query: args.query }] : []);
+        args.searches ||
+        (args.query
+          ? [
+              { type: "lex" as const, query: args.query },
+              { type: "vec" as const, query: args.query },
+            ]
+          : []);
       let directHits: any[] = [];
       try {
         directHits = await qmdBridge.search({
@@ -274,6 +290,30 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
         });
       } catch {
         directHits = [];
+      }
+
+      if (directHits.length === 0 && (args.query || args.searches?.length)) {
+        const queryTerm = (args.query || args.searches?.[0]?.query || "").toLowerCase();
+        const conceptsDir = join(vaultPath, config.paths.conceptsDir);
+        if (existsSync(conceptsDir) && queryTerm) {
+          const files = readdirSync(conceptsDir).filter((f) => f.endsWith(".md"));
+          for (const f of files) {
+            try {
+              const text = readFileSync(join(conceptsDir, f), "utf-8");
+              if (text.toLowerCase().includes(queryTerm)) {
+                directHits.push({
+                  file: join(config.paths.conceptsDir, f),
+                  displayPath: join(config.paths.conceptsDir, f),
+                  title: f.replace(/\.md$/i, ""),
+                  snippet: text.slice(0, 200),
+                  score: 0.8,
+                });
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
       }
 
       let pprAssociativeNeighborhood: Array<{ nodeId: string; score: number }> = [];
@@ -364,7 +404,16 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
         }
       }
 
-      const fullPath = resolve(vaultPath, rawPath);
+      let fullPath: string;
+      try {
+        fullPath = resolveSafeVaultPath(vaultPath, rawPath);
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: err.message || "Path traversal denied" }],
+        };
+      }
+
       if (!existsSync(fullPath)) {
         return {
           isError: true,
@@ -419,9 +468,9 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
     {
       description:
         "Returns the unified status of lernstoff-wiki: QMD SQLite store status, active inquiries count, concept notes count, and scratchpad metrics.",
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
-    async () => {
+    async (_args) => {
       let qmdStatus: any = { status: "unknown" };
       try {
         qmdStatus = await qmdBridge.getStatus();
@@ -465,6 +514,21 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
         }
       }
 
+      let noiseFilteredRatio = 0;
+      const logFile = join(vaultPath, config.paths.logFile);
+      if (existsSync(logFile)) {
+        try {
+          const logText = readFileSync(logFile, "utf-8");
+          const matches = [...logText.matchAll(/noise_filtered_ratio=([0-9.]+)/g)];
+          if (matches.length > 0) {
+            const lastVal = parseFloat(matches[matches.length - 1]![1]!);
+            if (!isNaN(lastVal)) noiseFilteredRatio = lastVal;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       const statusPayload = {
         version: config.version,
         vaultPath,
@@ -475,6 +539,7 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
           openInquiries: openInquiriesCount,
           scratchpadEntries: scratchpadCount,
           readyForPromotion: readyForPromotionCount,
+          noiseFilteredRatio,
         },
         config,
       };
@@ -502,7 +567,7 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
     },
     async (uri, vars) => {
       const relPath = typeof vars.path === "string" ? vars.path : String(vars.path || "");
-      const fullPath = resolve(vaultPath, relPath);
+      const fullPath = resolveSafeVaultPath(vaultPath, relPath);
 
       if (!existsSync(fullPath)) {
         throw new Error(`Resource note '${relPath}' not found at ${fullPath}`);

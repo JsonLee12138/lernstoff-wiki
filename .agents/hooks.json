@@ -1,0 +1,26 @@
+{
+  "harness-contract-approval-gate": {
+    "PreToolUse": [
+      {
+        "matcher": "invoke_subagent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "../scripts/harness-approval-gate.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "swarm",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "../scripts/harness-approval-gate.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

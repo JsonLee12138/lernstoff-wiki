@@ -4,10 +4,23 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { existsSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  writeFileSync,
+  unlinkSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { type LernstoffConfig, loadConfig, LERNSTOFF_DIR } from "./config.js";
+import {
+  type LernstoffConfig,
+  getConfigPath,
+  loadConfig,
+  saveConfig,
+  LERNSTOFF_DIR,
+} from "./config.js";
 import { QmdBridge } from "./qmd-bridge.js";
 import { VaultWatcher } from "./vault-watcher.js";
 import { VaultOps } from "./vault-ops.js";
@@ -27,6 +40,7 @@ export class DaemonServer {
   public vaultPath: string;
   public config: LernstoffConfig;
   public port = 8188;
+  public requestedPort = 8188;
   public qmdBridge: QmdBridge;
   public watcher: VaultWatcher;
   public vaultOps: VaultOps;
@@ -76,10 +90,12 @@ export class DaemonServer {
   }
 
   /**
-   * Start HTTP and SSE Daemon, binding to configured port with auto-increment on conflict.
+   * Start HTTP and SSE Daemon, binding to configured port with auto-increment on external conflict.
+   * If occupied by an existing daemon for the same vault, prevents duplicate instance and throws.
    */
   public async start(): Promise<number> {
     const desiredPort = this.config.server.port;
+    this.requestedPort = desiredPort;
     const maxPort = desiredPort + 100;
 
     for (let p = desiredPort; p <= maxPort; p++) {
@@ -88,8 +104,16 @@ export class DaemonServer {
         this.port = p;
         break;
       } catch (err: any) {
-        if (err.code === "EADDRINUSE" && p < maxPort) {
-          continue;
+        if (err.code === "EADDRINUSE") {
+          const isSameVault = await this.isSameVaultRunningOnPort(p);
+          if (isSameVault) {
+            throw new Error(
+              `Lernstoff daemon for vault "${this.vaultPath}" is already running on port ${p}. Preventing duplicate instance.`,
+            );
+          }
+          if (p < maxPort) {
+            continue;
+          }
         }
         throw err;
       }
@@ -98,11 +122,52 @@ export class DaemonServer {
     const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
     mkdirSync(lernstoffDir, { recursive: true });
 
+    const configPath = getConfigPath(this.vaultPath);
+    const persistedPortDiffers =
+      existsSync(configPath) && loadConfig(this.vaultPath).server.port !== this.port;
+    if (this.port !== desiredPort || persistedPortDiffers) {
+      saveConfig(this.vaultPath, {
+        server: { ...this.config.server, port: this.port },
+      });
+      this.config.server.port = this.port;
+    }
+
     writeFileSync(join(lernstoffDir, "daemon.port"), String(this.port), "utf-8");
     writeFileSync(join(lernstoffDir, "daemon.pid"), String(process.pid), "utf-8");
 
     this.watcher.start();
+    // Warm up QMD index in background
+    this.qmdBridge.update().catch(() => {});
     return this.port;
+  }
+
+  private async isSameVaultRunningOnPort(port: number): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 600);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        if (data && data.status === "ok" && data.vault) {
+          return resolve(String(data.vault)) === resolve(this.vaultPath);
+        }
+      }
+    } catch {
+      // not reachable or not a Lernstoff health endpoint
+    } finally {
+      clearTimeout(timeout);
+    }
+    return false;
+  }
+
+  public updateConfig(newConfig: LernstoffConfig): void {
+    this.config = newConfig;
+    this.pipeline.updateConfig(newConfig);
+    this.vaultOps.updateConfig(newConfig);
+    this.qmdBridge.updateConfig(newConfig);
+    this.watcher.updateConfig(newConfig);
   }
 
   private bindPort(port: number): Promise<void> {
@@ -195,6 +260,7 @@ export class DaemonServer {
           status: "ok",
           uptime: process.uptime(),
           port: this.port,
+          requestedPort: this.requestedPort,
           pid: process.pid,
           vault: this.vaultPath,
           version: this.config.version,
@@ -294,8 +360,23 @@ export class DaemonServer {
 
       if (pathname === "/api/reload-config" && req.method === "POST") {
         this.config = loadConfig(this.vaultPath);
+        this.updateConfig(this.config);
         this.broadcast("config_reloaded", this.config);
         this.jsonResponse(res, 200, { success: true, config: this.config });
+        return;
+      }
+
+      if (pathname === "/api/index-maint" && req.method === "POST") {
+        const action = body.action || "update";
+        if (action === "update") {
+          await this.qmdBridge.update();
+        } else if (action === "embed") {
+          await this.qmdBridge.embed();
+        } else if (action === "cleanup") {
+          await this.vaultOps.consolidateScratchpad({ action: "gc" });
+        }
+        this.broadcast("status_updated", { action });
+        this.jsonResponse(res, 200, { success: true, action });
         return;
       }
 
@@ -315,6 +396,19 @@ export class DaemonServer {
         const inquiries = await this.vaultOps.manageInquiries({ action: "list" });
         const scratchpad = await this.vaultOps.consolidateScratchpad({ action: "inspect" });
 
+        let noiseFilteredRatio = 0;
+        const logFile = join(this.vaultPath, this.config.paths.logFile);
+        if (existsSync(logFile)) {
+          try {
+            const logText = readFileSync(logFile, "utf-8");
+            const matches = [...logText.matchAll(/noise_filtered_ratio:?\s*([0-9.]+)/g)];
+            if (matches.length > 0) {
+              const lastVal = parseFloat(matches[matches.length - 1]![1]!);
+              if (!isNaN(lastVal)) noiseFilteredRatio = lastVal;
+            }
+          } catch {}
+        }
+
         this.jsonResponse(res, 200, {
           version: this.config.version,
           port: this.port,
@@ -326,6 +420,7 @@ export class DaemonServer {
             openInquiries: inquiries.filter((i: any) => i.status === "OPEN").length,
             scratchpadTotal: scratchpad.activeCount,
             scratchpadPromotionsReady: scratchpad.promotions.length,
+            noiseFilteredRatio,
           },
           config: this.config,
         });

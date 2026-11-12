@@ -1,5 +1,5 @@
 import { watch, type FSWatcher, existsSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, dirname } from "node:path";
 import { type LernstoffConfig } from "./config.js";
 
 export interface VaultWatcherCallbacks {
@@ -49,13 +49,21 @@ export class VaultWatcher {
     return this.recentWrites.has(relPath);
   }
 
+  public updateConfig(newConfig: LernstoffConfig): void {
+    this.config = newConfig;
+    if (this.isWatching) {
+      this.stop();
+      this.start();
+    }
+  }
+
   public start(): void {
     if (this.isWatching) return;
     this.isWatching = true;
 
     const dirsToWatch = [
       join(this.vaultPath, this.config.paths.wikiDir),
-      join(this.vaultPath, "inbox"),
+      join(this.vaultPath, dirname(this.config.paths.scratchpadFile)),
     ];
 
     for (const dir of dirsToWatch) {

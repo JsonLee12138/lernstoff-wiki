@@ -1,24 +1,25 @@
-import { join } from "node:path";
-import {
-  createStore,
-  type QMDStore,
-  type SearchOptions,
-  type SearchResult,
-  type IndexStatus,
-  type MultiGetResult,
-  type DocumentResult,
-  type DocumentNotFound,
-  type DocumentExcludedByIgnore,
+import { join, dirname } from "node:path";
+import { mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import type {
+  QMDStore,
+  SearchOptions,
+  IndexStatus,
+  DocumentResult,
+  DocumentNotFound,
+  DocumentExcludedByIgnore,
 } from "@tobilu/qmd";
 import { loadConfig, type LernstoffConfig, LERNSTOFF_DIR } from "./config.js";
 import { computeLexicalNovelty, segment } from "./algorithms/term-index.js";
 
 export type EntailmentVerdict = "ENTAILS_KNOWN" | "EXTENDS_BOUNDARY" | "CONTRADICTS_CLAIM";
 
+export type QmdSearchResult = Awaited<ReturnType<QMDStore["search"]>>;
+export type QmdMultiGetResult = Awaited<ReturnType<QMDStore["multiGet"]>>;
+
 export interface QmdBridgeOptions {
   vaultPath: string;
   config?: LernstoffConfig;
-  mockSearch?: (options: SearchOptions) => Promise<SearchResult[]>;
+  mockSearch?: (options: SearchOptions) => Promise<any[]>;
   mockReranker?: (query: string, documents: string[]) => Promise<number[]>;
   mockClassifier?: (claim: string, existingText: string) => Promise<EntailmentVerdict>;
 }
@@ -27,7 +28,7 @@ export class QmdBridge {
   private store: QMDStore | null = null;
   private vaultPath: string;
   private config: LernstoffConfig;
-  private mockSearch?: (options: SearchOptions) => Promise<SearchResult[]>;
+  private mockSearch?: (options: SearchOptions) => Promise<any[]>;
   private mockReranker?: (query: string, documents: string[]) => Promise<number[]>;
   private mockClassifier?: (claim: string, existingText: string) => Promise<EntailmentVerdict>;
 
@@ -39,11 +40,18 @@ export class QmdBridge {
     this.mockClassifier = options.mockClassifier;
   }
 
+  public updateConfig(newConfig: LernstoffConfig): void {
+    this.config = newConfig;
+  }
+
   public async getStore(): Promise<QMDStore> {
     if (!this.store) {
       const dbPath = join(this.vaultPath, LERNSTOFF_DIR, "index.sqlite");
       const wikiPath = join(this.vaultPath, this.config.paths.wikiDir);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      mkdirSync(wikiPath, { recursive: true });
 
+      const { createStore } = await import("@tobilu/qmd");
       this.store = await createStore({
         dbPath,
         config: {
@@ -64,12 +72,54 @@ export class QmdBridge {
     return this.store;
   }
 
-  public async search(options: SearchOptions): Promise<SearchResult[]> {
+  public async search(options: SearchOptions): Promise<any[]> {
     if (this.mockSearch) {
       return this.mockSearch(options);
     }
     const s = await this.getStore();
-    return s.search(options);
+    const searchOpts: SearchOptions = {
+      ...options,
+      rerank: options.rerank ?? false,
+    };
+    let results: any[] = [];
+    try {
+      results = await s.search(searchOpts);
+    } catch {
+      try {
+        const q = options.query || options.queries?.[0]?.query;
+        if (q) {
+          results = await s.searchLex(q, { limit: options.limit });
+        }
+      } catch {
+        results = [];
+      }
+    }
+
+    if (results.length === 0) {
+      const q = (options.query || options.queries?.[0]?.query || "").toLowerCase();
+      if (q) {
+        const conceptsDir = join(this.vaultPath, this.config.paths.conceptsDir);
+        if (existsSync(conceptsDir)) {
+          const files = readdirSync(conceptsDir).filter((f) => f.endsWith(".md"));
+          for (const f of files) {
+            try {
+              const text = readFileSync(join(conceptsDir, f), "utf-8");
+              if (text.toLowerCase().includes(q)) {
+                results.push({
+                  file: join(this.config.paths.conceptsDir, f),
+                  displayPath: join(this.config.paths.conceptsDir, f),
+                  title: f.replace(/\.md$/i, ""),
+                  snippet: text.slice(0, 200),
+                  score: 0.85,
+                });
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    return results;
   }
 
   public async get(
@@ -83,7 +133,7 @@ export class QmdBridge {
   public async multiGet(
     pattern: string,
     options?: { includeBody?: boolean; maxBytes?: number },
-  ): Promise<MultiGetResult> {
+  ): Promise<any> {
     const s = await this.getStore();
     return s.multiGet(pattern, options);
   }
@@ -119,14 +169,14 @@ export class QmdBridge {
       const internalLlm = (s as any).internal?.llm;
       if (internalLlm && typeof internalLlm.rerank === "function") {
         // Race against a short timeout so offline or test environments without pre-pulled GGUF models fall back gracefully
-        const timeoutMs = process.env.VITEST ? 100 : 1000;
+        const timeoutMs = process.env.VITEST ? 100 : 150;
         const timeoutPromise = new Promise<null>((_, reject) =>
           setTimeout(
             () => reject(new Error("LLM rerank timed out (offline/test fallback)")),
             timeoutMs,
           ),
         );
-        const rerankDocs = documents.map((d) => ({ document: d }));
+        const rerankDocs = documents.map((d, idx) => ({ file: `passage-${idx}`, text: d }));
         const result = await Promise.race([internalLlm.rerank(query, rerankDocs), timeoutPromise]);
         if (result && Array.isArray(result.results)) {
           const scores = Array.from({ length: documents.length }, () => 0);
@@ -170,7 +220,7 @@ export class QmdBridge {
 
     // Decision matrix (PRD.md Section 4.3):
     // If lexical novelty is low (< 0.15), it entails known facts
-    if (novelty < 0.15) {
+    if (novelty < this.config.gate.minLexNovelty) {
       return "ENTAILS_KNOWN";
     }
 
@@ -183,12 +233,17 @@ export class QmdBridge {
       "however",
       "whereas",
       "fails to",
+      "not supported",
+      "disproves",
       "反之",
       "不同于",
       "缺陷",
       "并非",
       "不适用",
       "冲突",
+      "违反",
+      "无法保证",
+      "不成立",
     ];
     const claimLower = claim.toLowerCase();
     const hasContradictionSignal = contradictionMarkers.some((m) => claimLower.includes(m));

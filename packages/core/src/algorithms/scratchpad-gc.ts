@@ -1,10 +1,11 @@
 export interface ScratchpadEntry {
+  id?: string;
   firstSeen: string; // YYYY-MM-DD
   claim: string;
   hitCount: number;
   relatedEntities: string[];
   sources: string[];
-  status: "DEFERRED" | "READY_FOR_PROMOTION" | "ARCHIVED";
+  status: "DEFERRED" | "READY_FOR_PROMOTION" | "PROMOTED" | "ARCHIVED";
 }
 
 export function parseScratchpad(markdown: string): ScratchpadEntry[] {
@@ -37,9 +38,11 @@ export function parseScratchpad(markdown: string): ScratchpadEntry[] {
       const statusRaw = cols[5] || "DEFERRED";
       const status = statusRaw.includes("PROMOTION")
         ? "READY_FOR_PROMOTION"
-        : statusRaw.includes("ARCHIVED")
-          ? "ARCHIVED"
-          : "DEFERRED";
+        : statusRaw.includes("PROMOTED")
+          ? "PROMOTED"
+          : statusRaw.includes("ARCHIVED")
+            ? "ARCHIVED"
+            : "DEFERRED";
 
       if (claim) {
         entries.push({
@@ -72,9 +75,11 @@ export function formatScratchpad(entries: ScratchpadEntry[]): string {
     const statusLabel =
       entry.status === "READY_FOR_PROMOTION"
         ? "🟡 READY_FOR_PROMOTION"
-        : entry.status === "ARCHIVED"
-          ? "⚪ ARCHIVED"
-          : "🟢 DEFERRED";
+        : entry.status === "PROMOTED"
+          ? "🔵 PROMOTED"
+          : entry.status === "ARCHIVED"
+            ? "⚪ ARCHIVED"
+            : "🟢 DEFERRED";
     return `| ${entry.firstSeen} | ${entry.claim.replace(/\|/g, "\\|")} | ${entry.hitCount} | ${entitiesStr} | ${sourcesStr} | ${statusLabel} |`;
   });
 
@@ -143,18 +148,54 @@ export function upsertScratchpadEntry(
 export function pruneExpiredScratchpad(
   entries: ScratchpadEntry[],
   ttlDays = 14,
-  currentDate = new Date(),
+  currentDateOrRefTerms?: Date | Set<string> | string[],
+  referencedTerms?: Set<string> | string[],
 ): { active: ScratchpadEntry[]; expired: ScratchpadEntry[] } {
+  let currentDate = new Date();
+  let refTerms = referencedTerms;
+  if (currentDateOrRefTerms instanceof Date) {
+    currentDate = currentDateOrRefTerms;
+  } else if (currentDateOrRefTerms) {
+    refTerms = currentDateOrRefTerms;
+  }
+
   const active: ScratchpadEntry[] = [];
   const expired: ScratchpadEntry[] = [];
   const nowMs = currentDate.getTime();
+
+  const refSet = refTerms
+    ? new Set((Array.isArray(refTerms) ? refTerms : [...refTerms]).map((t) => t.toLowerCase()))
+    : null;
 
   for (const entry of entries) {
     const entryDate = new Date(entry.firstSeen).getTime();
     const ageDays = (nowMs - entryDate) / (1000 * 60 * 60 * 24);
 
-    // If it has been sitting for more than ttlDays with only 1 hit and not promoted: prune
-    if (ageDays >= ttlDays && entry.hitCount === 1 && entry.status === "DEFERRED") {
+    let isReferenced = false;
+    if (refSet) {
+      const claimLower = entry.claim.toLowerCase();
+      for (const term of refSet) {
+        if (term.includes(claimLower) || (claimLower.length > 5 && claimLower.includes(term))) {
+          isReferenced = true;
+          break;
+        }
+        for (const entity of entry.relatedEntities) {
+          if (term.includes(entity.toLowerCase())) {
+            isReferenced = true;
+            break;
+          }
+        }
+        if (isReferenced) break;
+      }
+    }
+
+    // If it has been sitting for more than ttlDays with only 1 hit, not promoted, and not referenced by permanent notes: prune
+    if (
+      ageDays >= ttlDays &&
+      entry.hitCount === 1 &&
+      entry.status === "DEFERRED" &&
+      !isReferenced
+    ) {
       expired.push({ ...entry, status: "ARCHIVED" });
     } else {
       active.push(entry);

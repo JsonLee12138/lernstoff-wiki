@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
-import { LERNSTOFF_DIR } from "@lernstoff/core";
+import { LERNSTOFF_DIR } from "@lernstoff/core/config";
 
 /**
  * Check if a process ID is currently running in the OS.
