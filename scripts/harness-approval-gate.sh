@@ -2,9 +2,10 @@
 # harness-approval-gate.sh — Antigravity PreToolUse Software 1.0 Gate
 #
 # Enforces human-in-the-loop confirmation (Proceed click or explicit user turn)
-# whenever .artifacts/SPEC.md or .artifacts/PLAN.md is created or substantively
-# modified, blocking premature invoke_subagent(slice-builder) or swarm(add)
-# while allowing read-only subagents and pure checkbox/status progress updates.
+# whenever .artifacts/SPEC.md or .artifacts/PLAN.md core contract sections are
+# created or substantively modified, blocking premature invoke_subagent(slice-builder)
+# or swarm(add) while allowing read-only subagents, checkbox/status updates, and
+# post-approval non-contract implementation notes / guardrails.
 
 set -euo pipefail
 
@@ -50,10 +51,7 @@ const isGatedSubagent =
   ["slice-builder", "self"].includes(String(args.TypeName || "").trim());
 const isGatedSwarm =
   toolName === "swarm" && String(args.action || "").trim() === "add";
-
-if (!isGatedSubagent && !isGatedSwarm) {
-  emit("allow");
-}
+const isGated = isGatedSubagent || isGatedSwarm;
 
 const workspaceRoot =
   (Array.isArray(input.workspacePaths) && input.workspacePaths[0]) ||
@@ -63,6 +61,7 @@ const specPath = path.join(workspaceRoot, ".artifacts", "SPEC.md");
 const planPath = path.join(workspaceRoot, ".artifacts", "PLAN.md");
 
 if (!fs.existsSync(specPath) || !fs.existsSync(planPath)) {
+  if (!isGated) emit("allow");
   emit(
     "deny",
     "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md and .artifacts/PLAN.md must both exist and be approved by the user before invoking slice-builder or swarm."
@@ -81,23 +80,35 @@ const hasTemplatePlaceholder =
   planContent.includes("<!-- HARNESS_TEMPLATE_UNFILLED");
 
 if (hasTemplatePlaceholder) {
+  if (!isGated) emit("allow");
   emit(
     "deny",
     "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md or .artifacts/PLAN.md still contains unfilled template placeholders. Draft the contract, sync <ArtifactDir>/harness_plan.md with ArtifactMetadata.RequestFeedback=true, stop your turn, and wait for the user to click Proceed."
   );
 }
 
-const normalizeContract = (text) =>
-  text
+const normalizeContract = (text) => {
+  const cleaned = text
     .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) =>
-      line
-        .replace(/^(\s*-\s*)\[[ xX\/-]\](\s+)/, "$1[ ]$2")
-        .replace(/^(\s*-\s*\*\*Status:\*\*\s*).+$/, "$1<STATUS>")
-    )
-    .join("\n")
-    .trim();
+    .replace(/<!--\s*non-contract\s*-->[\s\S]*?<!--\s*\/non-contract\s*-->/gi, "");
+  const nonContractHeadingRe =
+    /^##\s+(?:Implementation Notes(?:\s*\/\s*Guardrails)?|Guardrails|实施备注|风险护栏)\b/i;
+  const out = [];
+  let skipping = false;
+  for (const rawLine of cleaned.split("\n")) {
+    if (/^##\s+/.test(rawLine)) {
+      skipping = nonContractHeadingRe.test(rawLine);
+    }
+    if (skipping) continue;
+    const normalized = rawLine
+      .replace(/^(\s*-\s*)\[[ xX\/-]\](\s+)/, "$1[ ]$2")
+      .replace(/^(\s*-\s*\*\*)(?:Status|状态)(:\*\*\s*).+$/, "$1Status$2<STATUS>");
+    if (normalized.trim().length > 0) {
+      out.push(normalized);
+    }
+  }
+  return out.join("\n");
+};
 
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const semanticHash = sha256(
@@ -141,27 +152,44 @@ if (transcriptPath && fs.existsSync(transcriptPath)) {
   }
   if (lastUserIdx >= 0) {
     lastUserStep = parsed[lastUserIdx];
+    const fileWriteTools = new Set([
+      "write_file",
+      "edit_file",
+      "write_to_file",
+      "replace_file_content",
+      "multi_replace_file_content",
+    ]);
     for (let j = lastUserIdx + 1; j < parsed.length; j++) {
       const step = parsed[j];
       if (!step || !Array.isArray(step.tool_calls)) continue;
       for (const tc of step.tool_calls) {
-        if (!["write_file", "edit_file"].includes(tc.name)) continue;
-        const rawArgs = JSON.stringify((tc && tc.args) || {});
-        if (/\.artifacts[\\/]+(SPEC|PLAN)\.md/.test(rawArgs)) {
-          modifiedAfterUserInTranscript = true;
+        const tcName = String((tc && tc.name) || "");
+        const tcArgs = (tc && tc.args) || {};
+        if (fileWriteTools.has(tcName)) {
+          const targetPath = String(tcArgs.Path || tcArgs.TargetFile || "").replace(/^"+|"+$/g, "");
+          if (/\.artifacts[\\/]+(SPEC|PLAN)\.md$/.test(targetPath)) {
+            modifiedAfterUserInTranscript = true;
+          }
+        } else if (tcName === "run_command") {
+          const cmd = String(tcArgs.CommandLine || "");
+          if (/\.artifacts[\\/]+(SPEC|PLAN)\.md/.test(cmd)) {
+            modifiedAfterUserInTranscript = true;
+          }
         }
       }
     }
   }
 }
 
+let isUnapprovedArtifactComment = false;
 if (lastUserStep) {
   const lastUserContent = String(lastUserStep.content || "");
-  const isUnapprovedArtifactComment =
+  isUnapprovedArtifactComment =
     lastUserContent.includes("Comments on artifact URI:") &&
     !lastUserContent.includes("The user has approved this document.");
 
   if (isUnapprovedArtifactComment) {
+    if (!isGated) emit("allow");
     emit(
       "deny",
       "BLOCKED by AGY Harness Approval Gate: The user commented on the review artifact without approving it. Revise .artifacts/SPEC.md or .artifacts/PLAN.md as requested, update <ArtifactDir>/harness_plan.md with RequestFeedback=true, end your turn, and wait for user approval."
@@ -174,6 +202,7 @@ if (state && state.approvedHash === semanticHash) {
 }
 
 if (!lastUserStep || !lastUserStep.created_at) {
+  if (!isGated) emit("allow");
   emit(
     "force_ask",
     "AGY Harness: Confirm starting implementation against current .artifacts/SPEC.md and .artifacts/PLAN.md?"
@@ -191,6 +220,7 @@ if (
   maxContractMtimeMs > lastUserTimeMs ||
   modifiedAfterUserInTranscript
 ) {
+  if (!isGated) emit("allow");
   emit(
     "deny",
     "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md or .artifacts/PLAN.md was created or substantively modified after the last user confirmation. Sync <ArtifactDir>/harness_plan.md with ArtifactMetadata.RequestFeedback=true, stop calling tools to end your turn, and wait for the user to click Proceed (or confirm) in the next turn."
@@ -236,8 +266,7 @@ args = tc.get("args") or {}
 
 is_sub = tool_name == "invoke_subagent" and str(args.get("TypeName") or "").strip() in ("slice-builder", "self")
 is_swm = tool_name == "swarm" and str(args.get("action") or "").strip() == "add"
-if not is_sub and not is_swm:
-    emit("allow")
+is_gated = is_sub or is_swm
 
 ws_list = data.get("workspacePaths") or []
 ws_root = pathlib.Path(ws_list[0] if ws_list else os.environ["AGY_HARNESS_SCRIPT_REPO_ROOT"])
@@ -245,6 +274,8 @@ spec_path = ws_root / ".artifacts" / "SPEC.md"
 plan_path = ws_root / ".artifacts" / "PLAN.md"
 
 if not spec_path.exists() or not plan_path.exists():
+    if not is_gated:
+        emit("allow")
     emit("deny", "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md and .artifacts/PLAN.md must both exist and be approved by the user before invoking slice-builder or swarm.")
 
 spec_txt = spec_path.read_text(encoding="utf-8")
@@ -255,15 +286,33 @@ if (not spec_txt.strip() or not plan_txt.strip()
     or "<!-- HARNESS_TEMPLATE_UNFILLED" in spec_txt
     or "## Slice 1: [Title]" in plan_txt
     or "<!-- HARNESS_TEMPLATE_UNFILLED" in plan_txt):
+    if not is_gated:
+        emit("allow")
     emit("deny", "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md or .artifacts/PLAN.md still contains unfilled template placeholders. Sync <ArtifactDir>/harness_plan.md with RequestFeedback=true, end your turn, and wait for the user to click Proceed.")
 
 def norm(t):
+    cleaned = re.sub(
+        r"<!--\s*non-contract\s*-->[\s\S]*?<!--\s*/non-contract\s*-->",
+        "",
+        t.replace("\r\n", "\n"),
+        flags=re.IGNORECASE,
+    )
+    non_contract_re = re.compile(
+        r"^##\s+(?:Implementation Notes(?:\s*/\s*Guardrails)?|Guardrails|实施备注|风险护栏)\b",
+        re.IGNORECASE,
+    )
     lines = []
-    for ln in t.replace("\r\n", "\n").split("\n"):
+    skipping = False
+    for ln in cleaned.split("\n"):
+        if re.match(r"^##\s+", ln):
+            skipping = bool(non_contract_re.match(ln))
+        if skipping:
+            continue
         ln = re.sub(r"^(\s*-\s*)\[[ xX/-]\](\s+)", r"\1[ ]\2", ln)
-        ln = re.sub(r"^(\s*-\s*\*\*Status:\*\*\s*).+$", r"\1<STATUS>", ln)
-        lines.append(ln)
-    return "\n".join(lines).strip()
+        ln = re.sub(r"^(\s*-\s*\*\*)(?:Status|状态)(:\*\*\s*).+$", r"\1Status\2<STATUS>", ln)
+        if ln.strip():
+            lines.append(ln)
+    return "\n".join(lines)
 
 sem_hash = hashlib.sha256(("SPEC\n" + norm(spec_txt) + "\nPLAN\n" + norm(plan_txt)).encode("utf-8")).hexdigest()
 state_dir = pathlib.Path(os.environ.get("AGY_HARNESS_STATE_DIR") or os.environ.get("PLUGIN_DATA") or (pathlib.Path(tempfile.gettempdir()) / "agy-harness-approvals"))
@@ -295,22 +344,38 @@ if tp and pathlib.Path(tp).exists():
             pass
     if last_idx >= 0:
         last_user = parsed[last_idx]
+        file_write_tools = {
+            "write_file",
+            "edit_file",
+            "write_to_file",
+            "replace_file_content",
+            "multi_replace_file_content",
+        }
         for step in parsed[last_idx + 1:]:
             for call in (step.get("tool_calls") or []):
-                if call.get("name") not in ("write_file", "edit_file"):
-                    continue
-                if re.search(r"\.artifacts[\\/]+(SPEC|PLAN)\.md", json.dumps(call.get("args") or {})):
-                    mod_after = True
+                tc_name = str((call or {}).get("name") or "")
+                tc_args = (call or {}).get("args") or {}
+                if tc_name in file_write_tools:
+                    target_path = str(tc_args.get("Path") or tc_args.get("TargetFile") or "").strip("\"")
+                    if re.search(r"\.artifacts[\\/]+(SPEC|PLAN)\.md$", target_path):
+                        mod_after = True
+                elif tc_name == "run_command":
+                    if re.search(r"\.artifacts[\\/]+(SPEC|PLAN)\.md", str(tc_args.get("CommandLine") or "")):
+                        mod_after = True
 
 if last_user:
     content = str(last_user.get("content") or "")
     if "Comments on artifact URI:" in content and "The user has approved this document." not in content:
+        if not is_gated:
+            emit("allow")
         emit("deny", "BLOCKED by AGY Harness Approval Gate: The user commented on the review artifact without approving it. Revise .artifacts/SPEC.md or .artifacts/PLAN.md, update <ArtifactDir>/harness_plan.md with RequestFeedback=true, end your turn, and wait for user approval.")
 
 if state and state.get("approvedHash") == sem_hash:
     emit("allow")
 
 if not last_user or not last_user.get("created_at"):
+    if not is_gated:
+        emit("allow")
     emit("force_ask", "AGY Harness: Confirm starting implementation against current .artifacts/SPEC.md and .artifacts/PLAN.md?")
 
 ts_raw = str(last_user["created_at"]).replace("Z", "+00:00")
@@ -318,6 +383,8 @@ last_ms = datetime.datetime.fromisoformat(ts_raw).timestamp() * 1000.0
 max_mtime_ms = max(spec_path.stat().st_mtime, plan_path.stat().st_mtime) * 1000.0
 
 if max_mtime_ms > last_ms or mod_after:
+    if not is_gated:
+        emit("allow")
     emit("deny", "BLOCKED by AGY Harness Approval Gate: .artifacts/SPEC.md or .artifacts/PLAN.md was created or substantively modified after the last user confirmation. Sync <ArtifactDir>/harness_plan.md with ArtifactMetadata.RequestFeedback=true, stop calling tools to end your turn, and wait for the user to click Proceed (or confirm) in the next turn.")
 
 state_dir.mkdir(parents=True, exist_ok=True)

@@ -17,6 +17,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import {
   type LernstoffConfig,
   getConfigPath,
+  getVaultAlias,
   loadConfig,
   saveConfig,
   LERNSTOFF_DIR,
@@ -108,6 +109,37 @@ export class DaemonServer {
    * If occupied by an existing daemon for the same vault, prevents duplicate instance and throws.
    */
   public async start(): Promise<number> {
+    const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
+    const existingPidFile = join(lernstoffDir, "daemon.pid");
+    const existingPortFile = join(lernstoffDir, "daemon.port");
+    if (existsSync(existingPidFile) && existsSync(existingPortFile)) {
+      try {
+        const existingPid = parseInt(readFileSync(existingPidFile, "utf-8").trim(), 10);
+        const existingPort = parseInt(readFileSync(existingPortFile, "utf-8").trim(), 10);
+        if (
+          Number.isInteger(existingPid) &&
+          existingPid > 0 &&
+          Number.isInteger(existingPort) &&
+          existingPort > 0
+        ) {
+          let pidAlive = false;
+          try {
+            process.kill(existingPid, 0);
+            pidAlive = true;
+          } catch {}
+          if (pidAlive && (await this.isSameVaultRunningOnPort(existingPort))) {
+            throw new Error(
+              `Lernstoff daemon for vault "${this.vaultPath}" is already running on port ${existingPort}. Preventing duplicate instance.`,
+            );
+          }
+        }
+      } catch (err: any) {
+        if (err?.message?.includes("Preventing duplicate instance")) {
+          throw err;
+        }
+      }
+    }
+
     const desiredPort = this.config.server.port;
     this.requestedPort = desiredPort;
     const maxPort = desiredPort + 100;
@@ -133,7 +165,6 @@ export class DaemonServer {
       }
     }
 
-    const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
     mkdirSync(lernstoffDir, { recursive: true });
 
     // Note: When port conflict occurs and auto-increment binds to a fallback port (this.port !== desiredPort),
@@ -154,6 +185,7 @@ export class DaemonServer {
 
     writeFileSync(join(lernstoffDir, "daemon.port"), String(this.port), "utf-8");
     writeFileSync(join(lernstoffDir, "daemon.pid"), String(process.pid), "utf-8");
+    writeFileSync(join(lernstoffDir, "daemon.alias"), getVaultAlias(this.vaultPath), "utf-8");
 
     this.watcher.start();
     // Warm up QMD index in background
@@ -275,6 +307,11 @@ export class DaemonServer {
       if (existsSync(pidFile)) unlinkSync(pidFile);
     } catch {}
 
+    try {
+      const aliasFile = join(lernstoffDir, "daemon.alias");
+      if (existsSync(aliasFile)) unlinkSync(aliasFile);
+    } catch {}
+
     for (const client of this.sseClients) {
       try {
         client.end();
@@ -334,6 +371,7 @@ export class DaemonServer {
           requestedPort: this.requestedPort,
           pid: process.pid,
           vault: this.vaultPath,
+          alias: getVaultAlias(this.vaultPath),
           version: this.config.version,
         }),
       );

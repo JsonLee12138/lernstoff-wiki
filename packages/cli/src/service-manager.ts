@@ -3,7 +3,12 @@ import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 import { setConfigValue } from "@lernstoff/core/config";
-import { getRunningDaemonInfo, killDaemonProcess } from "./daemon-pid.js";
+import {
+  cleanupDaemonStateFiles,
+  getRunningDaemonInfo,
+  killDaemonProcess,
+  listAllRunningDaemons,
+} from "./daemon-pid.js";
 
 export interface ServiceStatus {
   installed: boolean;
@@ -122,14 +127,21 @@ WantedBy=default.target
     const absVault = resolve(vaultPath);
     const platform = process.platform;
 
-    // Gracefully stop any existing unmanaged daemon for this vault before loading OS service,
-    // so the new supervised daemon can cleanly bind the configured port without conflict or drift.
+    // 1. Unload any existing OS supervision first so KeepAlive does not respawn during handover
+    ServiceManager.stopSupervision(absVault);
+
+    // 2. Gracefully stop any existing daemon for this vault (by PID file and process table)
     const existing = getRunningDaemonInfo(absVault);
     if (existing) {
       killDaemonProcess(existing.pid, 2000);
-      // Trigger cleanup of stale state files if process is dead
-      getRunningDaemonInfo(absVault);
     }
+    const allRunning = await listAllRunningDaemons();
+    for (const d of allRunning) {
+      if (resolve(d.vaultPath) === absVault) {
+        killDaemonProcess(d.pid, 2000);
+      }
+    }
+    cleanupDaemonStateFiles(absVault);
 
     if (platform === "darwin") {
       const plistPath = ServiceManager.getLaunchdPlistPath(absVault);

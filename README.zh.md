@@ -34,7 +34,24 @@
 
 - **Node.js** $\ge 20.0.0$
 
-### 方式一：通过 npm / pnpm 安装（推荐）
+### 🤖 方式一：通过 AI 编程智能体一键安装（推荐）
+
+将以下 Prompt 直接复制发送给你的 AI 编程助手（Claude Code、Cursor、Antigravity、Codex 或 WorkBuddy）：
+
+> ```text
+> 你正在协助我安装并配置 Lernstoff Wiki（Obsidian 沉浸式认知命题笔记引擎）。
+> 请按照交互式配置流程执行：
+> 1. 检查本机是否已安装 `@lernstoff/cli`（运行 `lernstoff --version`）。若未安装，检查 Node.js 环境（>= 20）并全局安装 `@lernstoff/cli@beta`（`npm install -g @lernstoff/cli@beta`）。
+> 2. 询问我以下配置项（请勿替我盲猜决定）：
+>    - 我的 Obsidian 知识库路径（`--vault <path>`）；
+>    - 安装作用域：全局（`global`）、仅当前项目（`project`）还是两者皆要（`both`）；
+>    - 目标智能体：`all` / `claude` / `cursor` / `antigravity` / `codex` / `workbuddy`；
+>    - 是否安装 Obsidian 插件（`lernstoff plugin install`）、启动后台守护进程（`lernstoff server start --daemon`）、注册开机自启服务（`lernstoff service install`）以及拉取本地模型（`lernstoff doctor --pull-models`）。
+> 3. 严格解耦路径：`--vault` 始终指向我的 Obsidian 知识库目录，`--project` 指向当前代码工程目录（如适用）。
+> 4. 依次执行 `lernstoff init`、`lernstoff skill install`、`lernstoff rule install` 及所选增强项，最后通过 `lernstoff doctor` 进行健康检查并汇报结果。
+> ```
+
+### 方式二：通过 npm / pnpm 安装
 
 ```bash
 npm install -g @lernstoff/cli@beta
@@ -42,13 +59,13 @@ npm install -g @lernstoff/cli@beta
 pnpm add -g @lernstoff/cli@beta
 ```
 
-### 方式二：通过 Homebrew 安装（macOS）
+### 方式三：通过 Homebrew 安装（macOS）
 
 ```bash
 brew install --build-from-source Formula/lernstoff.rb
 ```
 
-### 方式三：从源码构建安装
+### 方式四：从源码构建安装
 
 ```bash
 git clone https://github.com/JsonLee12138/lernstoff-wiki.git
@@ -103,10 +120,17 @@ lernstoff service install --vault /path/to/my-vault
 
 ### 3. 接入 AI 编程智能体
 
-一条命令为本机已安装的智能体配置好 MCP 服务与 `lernstoff-wiki` Skill：
+为本机已安装的智能体配置好 MCP 服务与 Skills（`lernstoff-wiki` 与 `lernstoff-setup`）：
 
 ```bash
+# 默认：同时安装到全局 (~/.claude.json 等) 与项目级配置
 lernstoff skill install --vault /path/to/my-vault --target all
+
+# 仅项目级（仅写入当前代码工程的 .mcp.json、.cursor/、.agents/）
+lernstoff skill install --vault /path/to/my-vault --project /path/to/your-project --scope project --target all
+
+# 仅全局（仅写入 ~/.claude.json、~/.gemini/、~/.cursor/、~/.workbuddy/）
+lernstoff skill install --vault /path/to/my-vault --scope global --target all
 ```
 
 支持的目标包括：`claude`（Claude Code）、`cursor`（Cursor）、`antigravity`（Antigravity）、`codex`（Codex）、`workbuddy`（WorkBuddy）或 `all`。
@@ -222,7 +246,11 @@ lernstoff service <install|uninstall|status>
 
 ```bash
 # 为编程智能体一键注入 MCP 配置与 SKILL.md
-lernstoff skill install [--target <all|claude|cursor|antigravity|codex|workbuddy>]
+# 参数说明：
+#   --scope <both|global|project>（默认 both）
+#   --global                     （--scope global 的简写）
+#   --project <path>             （代码工程目录，默认等于 --vault 路径）
+lernstoff skill install [--target <all|claude|cursor|antigravity|codex|workbuddy>] [--scope <both|global|project>] [--global] [--project <path>] [--vault <path>]
 lernstoff skill show
 
 # 注入或移除智能体路由规则（AGENTS.md / CLAUDE.md / GEMINI.md / WorkBuddy）

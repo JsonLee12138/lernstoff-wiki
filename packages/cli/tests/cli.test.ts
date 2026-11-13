@@ -598,4 +598,152 @@ describe("CLI Components (Daemon PID, Service Manager, Agent Installer, Cognitiv
     expect(existsSync(join(workbuddySkillDir, "SKILL.md"))).toBe(true);
     expect(existsSync(join(workbuddySkillDir, "references/best-practices.md"))).toBe(true);
   });
+
+  it("supports `which --json`, short vault aliases, and stopping daemons whose vault path contains spaces", async () => {
+    const whichRes = await runCliBin(["which", "--json"]);
+    expect(whichRes.code).toBe(0);
+    const whichJson = JSON.parse(whichRes.stdout);
+    expect(typeof whichJson.cliPath).toBe("string");
+    expect(whichJson.cliPath.length).toBeGreaterThan(0);
+
+    const spaceVault = join(tempDir, "My Obsidian Vault");
+    mkdirSync(spaceVault, { recursive: true });
+    await initVault(spaceVault);
+    const port = await allocateFreePort();
+
+    const startRes = await runCliBin([
+      "server",
+      "start",
+      "--daemon",
+      "--port",
+      String(port),
+      "--vault",
+      spaceVault,
+    ]);
+    expect(startRes.code).toBe(0);
+
+    try {
+      const listRes = await runCliBin(["server", "list", "--json", "--vault", spaceVault]);
+      expect(listRes.code).toBe(0);
+      const daemons = JSON.parse(listRes.stdout);
+      const found = daemons.find((d: any) => d.port === port);
+      expect(found).toBeDefined();
+      expect(found.vaultPath).toBe(spaceVault);
+      expect(found.alias).toBe("my-obsidian-vault");
+
+      // Stop using --alias
+      const stopRes = await runCliBin(["server", "close", "--alias", "my-obsidian-vault"]);
+      expect(stopRes.code).toBe(0);
+      expect(stopRes.stdout).toContain("Stopped daemon 'my-obsidian-vault'");
+      expect(getRunningDaemonInfo(spaceVault)).toBeNull();
+    } finally {
+      const leftover = getRunningDaemonInfo(spaceVault);
+      if (leftover) {
+        await runCliBin(["server", "stop", "--port", String(port)]);
+      }
+    }
+  });
+
+  it("discovers and installs all skills (lernstoff-wiki and lernstoff-setup) with scoped targets and decoupled --project path", () => {
+    const projectDir = join(sandboxRoot, "my-code-project");
+    mkdirSync(projectDir, { recursive: true });
+
+    // 1. Project-only scope installs to projectDir, NOT to homeDir, NOT to tempDir (vault)
+    const projectSkills = AgentInstaller.installSkill("cursor", tempDir, {
+      scope: "project",
+      projectPath: projectDir,
+    });
+    expect(projectSkills.length).toBeGreaterThanOrEqual(2);
+    expect(existsSync(join(projectDir, ".cursor/skills/lernstoff-wiki/SKILL.md"))).toBe(true);
+    expect(existsSync(join(projectDir, ".cursor/skills/lernstoff-setup/SKILL.md"))).toBe(true);
+    expect(existsSync(join(homeDir, ".cursor/skills/lernstoff-wiki"))).toBe(false);
+    expect(existsSync(join(tempDir, ".cursor/skills/lernstoff-wiki"))).toBe(false);
+
+    // Project MCP config writes to projectDir/.cursor/mcp.json with --vault pointing to tempDir
+    const projectMcps = AgentInstaller.installMcp("cursor", tempDir, {
+      scope: "project",
+      projectPath: projectDir,
+    });
+    expect(projectMcps).toContain(join(projectDir, ".cursor/mcp.json"));
+    expect(existsSync(join(homeDir, ".cursor/mcp.json"))).toBe(false);
+    const projCursorMcp = JSON.parse(readFileSync(join(projectDir, ".cursor/mcp.json"), "utf-8"));
+    expect(projCursorMcp.mcpServers.lernstoff.args).toContain(tempDir);
+
+    // 2. Global-only scope installs to homeDir, NOT to projectDir
+    const globalSkills = AgentInstaller.installSkill("claude", tempDir, {
+      scope: "global",
+      projectPath: projectDir,
+    });
+    expect(globalSkills.length).toBeGreaterThanOrEqual(2);
+    expect(existsSync(join(homeDir, ".claude/skills/lernstoff-wiki/SKILL.md"))).toBe(true);
+    expect(existsSync(join(homeDir, ".claude/skills/lernstoff-setup/SKILL.md"))).toBe(true);
+    expect(existsSync(join(projectDir, ".claude/skills/lernstoff-wiki"))).toBe(false);
+
+    const globalMcps = AgentInstaller.installMcp("claude", tempDir, {
+      scope: "global",
+      projectPath: projectDir,
+    });
+    expect(globalMcps).toContain(join(homeDir, ".claude.json"));
+    expect(existsSync(join(projectDir, ".mcp.json"))).toBe(false);
+
+    // 3. Both scope (default) installs to both and deduplicates paths
+    const allMcps = AgentInstaller.installMcp("all", tempDir, {
+      scope: "both",
+      projectPath: projectDir,
+    });
+    // Check no duplicate file paths returned
+    expect(new Set(allMcps).size).toBe(allMcps.length);
+    expect(existsSync(join(projectDir, ".mcp.json"))).toBe(true);
+    const projMcp = JSON.parse(readFileSync(join(projectDir, ".mcp.json"), "utf-8"));
+    expect(projMcp.mcpServers.lernstoff.args).toContain(tempDir);
+  });
+
+  it("handles CLI `skill install` flags: --scope validation, conflicts, and --project decoupling", async () => {
+    const projectDir = join(sandboxRoot, "cli-project");
+    mkdirSync(projectDir, { recursive: true });
+
+    // 1. Invalid scope rejected
+    const invalidScope = await runCliBin([
+      "skill",
+      "install",
+      "--scope",
+      "invalid-scope",
+      "--vault",
+      tempDir,
+    ]);
+    expect(invalidScope.code).not.toBe(0);
+    expect(invalidScope.stderr + invalidScope.stdout).toContain("Invalid --scope");
+
+    // 2. Conflicting --global with --scope project rejected
+    const conflictRes = await runCliBin([
+      "skill",
+      "install",
+      "--global",
+      "--scope",
+      "project",
+      "--vault",
+      tempDir,
+    ]);
+    expect(conflictRes.code).not.toBe(0);
+    expect(conflictRes.stderr + conflictRes.stdout).toContain("Conflicting options");
+
+    // 3. Project flag automatically infers project scope and decouples --vault from --project
+    const projInstall = await runCliBin([
+      "skill",
+      "install",
+      "--target",
+      "cursor",
+      "--project",
+      projectDir,
+      "--vault",
+      tempDir,
+    ]);
+    expect(projInstall.code).toBe(0);
+    expect(existsSync(join(projectDir, ".cursor/skills/lernstoff-wiki/SKILL.md"))).toBe(true);
+    expect(existsSync(join(projectDir, ".cursor/skills/lernstoff-setup/SKILL.md"))).toBe(true);
+    expect(existsSync(join(projectDir, ".cursor/mcp.json"))).toBe(true);
+
+    const mcpData = JSON.parse(readFileSync(join(projectDir, ".cursor/mcp.json"), "utf-8"));
+    expect(mcpData.mcpServers.lernstoff.args).toContain(tempDir);
+  });
 });

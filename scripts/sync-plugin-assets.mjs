@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, copyFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, cpSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -21,12 +21,22 @@ if (!existsSync(pluginSrcDir)) {
   }
 }
 
-// 2. Sync lernstoff-wiki agent skill
-const skillSrcDir = join(root, "skills/lernstoff-wiki");
-const skillTargetDir = join(root, "packages/cli/assets/skills/lernstoff-wiki");
+// 2. Sync agent skills
+const skillsRoot = join(root, "skills");
+const skillsTargetBase = join(root, "packages/cli/assets/skills");
 
-if (existsSync(skillSrcDir)) {
-  mkdirSync(skillTargetDir, { recursive: true });
-  cpSync(skillSrcDir, skillTargetDir, { recursive: true });
-  console.log("Synced skills/lernstoff-wiki to packages/cli/assets/skills/lernstoff-wiki");
+if (existsSync(skillsRoot)) {
+  mkdirSync(skillsTargetBase, { recursive: true });
+  const entries = readdirSync(skillsRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const skillDir = join(skillsRoot, entry.name);
+      if (existsSync(join(skillDir, "SKILL.md"))) {
+        const targetDir = join(skillsTargetBase, entry.name);
+        mkdirSync(targetDir, { recursive: true });
+        cpSync(skillDir, targetDir, { recursive: true });
+        console.log(`Synced skills/${entry.name} to packages/cli/assets/skills/${entry.name}`);
+      }
+    }
+  }
 }

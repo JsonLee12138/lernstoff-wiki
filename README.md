@@ -34,7 +34,24 @@ Most AI note-taking tools fall into the **Collector's Fallacy**—dumping raw cl
 
 - **Node.js** $\ge 20.0.0$
 
-### Option 1: Install via npm / pnpm (Recommended)
+### 🤖 Instant Setup via AI Coding Agent (Recommended)
+
+Copy and paste this prompt directly into your AI coding assistant (Claude Code, Cursor, Antigravity, Codex, or WorkBuddy):
+
+> ```text
+> You are helping me set up and configure Lernstoff Wiki (a headless cognitive selective note-taking engine for Obsidian).
+> Please follow the interactive setup protocol:
+> 1. Check if `@lernstoff/cli` is installed by running `lernstoff --version`. If not, check Node.js (>= 20) and install `@lernstoff/cli@beta` globally (`npm install -g @lernstoff/cli@beta`).
+> 2. Ask me for:
+>    - My Obsidian Vault path (`--vault <path>`);
+>    - Desired scope: Global (`global`), Current Project (`project`), or Both (`both`);
+>    - Target agents: `all` / `claude` / `cursor` / `antigravity` / `codex` / `workbuddy`;
+>    - Whether to install the Obsidian plugin (`lernstoff plugin install`), start the background daemon (`lernstoff server start --daemon`), register OS boot auto-start (`lernstoff service install`), or pull local embedding models (`lernstoff doctor --pull-models`).
+> 3. Decouple paths: keep `--vault` pointing to my Obsidian vault, and `--project` pointing to my current code project (if applicable).
+> 4. Execute `lernstoff init`, `lernstoff skill install`, `lernstoff rule install`, and optional enhancements, then verify with `lernstoff doctor` and report the status.
+> ```
+
+### Option 1: Install via npm / pnpm
 
 ```bash
 npm install -g @lernstoff/cli@beta
@@ -103,10 +120,17 @@ lernstoff service install --vault /path/to/my-vault
 
 ### 3. Connect Your AI Coding Agents
 
-Install the MCP server and `lernstoff-wiki` skill across all detected agents in one command:
+Install the MCP server and skills (`lernstoff-wiki` & `lernstoff-setup`) across all detected agents:
 
 ```bash
+# Default: installs both globally (~/.claude.json, etc.) and to the project
 lernstoff skill install --vault /path/to/my-vault --target all
+
+# Project-only scope (writes to .mcp.json, .cursor/, .agents/ in your code project)
+lernstoff skill install --vault /path/to/my-vault --project /path/to/your-project --scope project --target all
+
+# Global-only scope (writes to ~/.claude.json, ~/.gemini/, ~/.cursor/, ~/.workbuddy/)
+lernstoff skill install --vault /path/to/my-vault --scope global --target all
 ```
 
 Supported targets: `claude` (Claude Code), `cursor` (Cursor), `antigravity` (Antigravity), `codex` (Codex), `workbuddy` (WorkBuddy), or `all`.
@@ -222,7 +246,11 @@ lernstoff service <install|uninstall|status>
 
 ```bash
 # Install MCP config + SKILL.md for AI agents
-lernstoff skill install [--target <all|claude|cursor|antigravity|codex|workbuddy>]
+# Flags:
+#   --scope <both|global|project> (default: both)
+#   --global                     (shorthand for --scope global)
+#   --project <path>             (target code project directory; defaults to --vault path)
+lernstoff skill install [--target <all|claude|cursor|antigravity|codex|workbuddy>] [--scope <both|global|project>] [--global] [--project <path>] [--vault <path>]
 lernstoff skill show
 
 # Inject or remove cognitive routing rules (AGENTS.md / CLAUDE.md / GEMINI.md / WorkBuddy)

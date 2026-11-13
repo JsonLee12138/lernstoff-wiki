@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { z } from "zod";
 
@@ -117,6 +117,20 @@ function atomicWriteJson(filePath: string, data: unknown): void {
 
 export function getConfigPath(vaultPath: string): string {
   return join(vaultPath, LERNSTOFF_DIR, CONFIG_FILE_NAME);
+}
+
+/**
+ * Derive a short, human-friendly alias from a vault path (e.g. "my-vault").
+ */
+export function getVaultAlias(vaultPath: string): string {
+  const name = basename(resolve(vaultPath)) || "default";
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\-_]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!slug) return "default";
+  return slug.length > 32 ? slug.slice(0, 32).replace(/-+$/g, "") || "default" : slug;
 }
 
 export function loadConfig(vaultPath: string): LernstoffConfig {

@@ -698,4 +698,40 @@ describe("Obsidian Plugin SettingsTab (5 Visual Modules)", () => {
       plugin.onunload();
     }
   });
+
+  it("hides CLI Path setting when not detected and pre-fills it when detected", () => {
+    vi.spyOn(client, "getDetectedCliPath").mockReturnValueOnce(null);
+    client.cliPathOverride = undefined;
+    tab.display();
+    const hiddenSetting = tab.containerEl.settings.find(
+      (s: any) => s.name === "CLI Executable Path",
+    );
+    expect(hiddenSetting).toBeUndefined();
+
+    vi.spyOn(client, "getDetectedCliPath").mockReturnValueOnce("/opt/homebrew/bin/lernstoff");
+    tab.display();
+    const shownSetting = tab.containerEl.settings.find(
+      (s: any) => s.name === "CLI Executable Path",
+    );
+    expect(shownSetting).toBeDefined();
+    expect(shownSetting.elements[0].val).toBe("/opt/homebrew/bin/lernstoff");
+  });
+
+  it("stops and restarts daemon cleanly on port blur when running port differs from configured port", async () => {
+    client.isRunning = true;
+    client.port = 8188;
+    client.config.server.port = 8188;
+    const stopSpy = vi.spyOn(client, "stopDaemon").mockResolvedValue(true);
+    const startSpy = vi.spyOn(client, "startDaemon").mockResolvedValue(true);
+
+    tab.display();
+    const portSetting = tab.containerEl.settings.find((s: any) => s.name === "Server Port");
+    const portText = portSetting.elements[0];
+    portText.inputEl.value = "9191";
+    portText.changeHandler("9191");
+    await portText.inputEl.dispatchEvent("blur");
+
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
 });
