@@ -86,5 +86,12 @@ describe("Slice 1: Progressive Skill Refactor & Asset Sync", () => {
     const assetSkillContent = readFileSync(join(assetsSkillDir, "SKILL.md"), "utf-8");
     const srcSkillContent = readFileSync(join(skillDir, "SKILL.md"), "utf-8");
     expect(assetSkillContent).toBe(srcSkillContent);
+
+    const setupAssetDir = join(rootDir, "packages/cli/assets/skills/lernstoff-setup");
+    expect(existsSync(join(setupAssetDir, "SKILL.md"))).toBe(true);
+    const setupSrcDir = join(rootDir, "skills/lernstoff-setup");
+    expect(readFileSync(join(setupAssetDir, "SKILL.md"), "utf-8")).toBe(
+      readFileSync(join(setupSrcDir, "SKILL.md"), "utf-8"),
+    );
   });
 });

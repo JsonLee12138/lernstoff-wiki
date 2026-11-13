@@ -168,8 +168,8 @@ export class QmdBridge {
       const s = await this.getStore();
       const internalLlm = (s as any).internal?.llm;
       if (internalLlm && typeof internalLlm.rerank === "function") {
-        // Race against a short timeout so offline or test environments without pre-pulled GGUF models fall back gracefully
-        const timeoutMs = process.env.VITEST ? 100 : 150;
+        // Race against a timeout so offline or test environments without pre-pulled GGUF models fall back gracefully
+        const timeoutMs = process.env.VITEST ? 100 : 15_000;
         const timeoutPromise = new Promise<null>((_, reject) =>
           setTimeout(
             () => reject(new Error("LLM rerank timed out (offline/test fallback)")),

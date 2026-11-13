@@ -179,6 +179,8 @@ export class DaemonClient {
   private ssePort?: number;
   private isDestroyed = false;
   private pollTimer?: NodeJS.Timeout;
+  private isLifecycleBusy = false;
+  private lifecycleLock: Promise<void> = Promise.resolve();
 
   constructor(vaultPath: string) {
     this.vaultPath = resolve(vaultPath);
@@ -398,10 +400,26 @@ export class DaemonClient {
     return null;
   }
 
+  private async withLifecycleLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.lifecycleLock;
+    let release!: () => void;
+    this.lifecycleLock = new Promise<void>((r) => {
+      release = r;
+    });
+    await prev;
+    this.isLifecycleBusy = true;
+    try {
+      return await fn();
+    } finally {
+      this.isLifecycleBusy = false;
+      release();
+    }
+  }
+
   public startHealthPolling(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = setInterval(async () => {
-      if (this.isDestroyed) return;
+      if (this.isDestroyed || this.isLifecycleBusy) return;
       await this.checkDaemon();
     }, 1000);
   }
@@ -490,6 +508,37 @@ export class DaemonClient {
     return { cmd: "lernstoff", baseArgs: [] };
   }
 
+  /**
+   * Detect the actual `lernstoff` CLI executable path on this machine, or null if not found.
+   */
+  public getDetectedCliPath(): string | null {
+    const prevOverride = this.cliPathOverride;
+    this.cliPathOverride = undefined;
+    const { cmd } = this.resolveCommand();
+    this.cliPathOverride = prevOverride;
+
+    if (cmd !== "lernstoff" && existsSync(cmd)) {
+      return cmd;
+    }
+
+    try {
+      const whichCmd = process.platform === "win32" ? "where lernstoff" : "which lernstoff";
+      const out = execSync(whichCmd, {
+        stdio: ["ignore", "pipe", "ignore"],
+        env: this.getSpawnEnv(),
+        timeout: 800,
+      })
+        .toString("utf-8")
+        .split(/\r?\n/)[0]
+        ?.trim();
+      if (out && existsSync(out)) {
+        return out;
+      }
+    } catch {}
+
+    return null;
+  }
+
   public async runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
     return new Promise((resolveResult) => {
       const { cmd, baseArgs } = this.resolveCommand();
@@ -514,6 +563,10 @@ export class DaemonClient {
   }
 
   public async startDaemon(): Promise<boolean> {
+    return this.withLifecycleLock(() => this.startDaemonInternal());
+  }
+
+  private async startDaemonInternal(): Promise<boolean> {
     try {
       // Idempotent guard: if daemon is already running on the configured port, avoid duplicate spawn
       const alreadyRunning = await this.checkDaemon({ skipMetrics: true });
@@ -594,6 +647,10 @@ export class DaemonClient {
   }
 
   public async stopDaemon(): Promise<boolean> {
+    return this.withLifecycleLock(() => this.stopDaemonInternal());
+  }
+
+  private async stopDaemonInternal(): Promise<boolean> {
     const pidFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.pid");
     const portFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.port");
     let targetPid = this.pid;
@@ -687,91 +744,110 @@ export class DaemonClient {
   }
 
   public async restartDaemon(): Promise<boolean> {
-    const pidFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.pid");
-    const portFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.port");
-    let targetPid = this.pid;
-    if (existsSync(pidFile)) {
-      try {
-        const parsed = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-        if (Number.isInteger(parsed) && parsed > 0) {
-          targetPid = parsed;
-        }
-      } catch {}
-    }
-
-    this.sseAbortController?.abort();
-    this.sseAbortController = undefined;
-    this.ssePort = undefined;
-
-    if (targetPid && isPidAlive(targetPid) && isSafeDaemonPid(targetPid, this.vaultPath)) {
-      try {
-        process.kill(targetPid, "SIGTERM");
-      } catch {}
-      const termDeadline = Date.now() + 350;
-      while (Date.now() < termDeadline && isPidAlive(targetPid)) {
-        await new Promise((r) => setTimeout(r, 15));
-      }
-      if (isPidAlive(targetPid)) {
+    return this.withLifecycleLock(async () => {
+      const pidFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.pid");
+      const portFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.port");
+      let targetPid = this.pid;
+      if (existsSync(pidFile)) {
         try {
-          process.kill(targetPid, "SIGKILL");
+          const parsed = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+          if (Number.isInteger(parsed) && parsed > 0) {
+            targetPid = parsed;
+          }
         } catch {}
-        const killDeadline = Date.now() + 150;
-        while (Date.now() < killDeadline && isPidAlive(targetPid)) {
+      }
+
+      this.sseAbortController?.abort();
+      this.sseAbortController = undefined;
+      this.ssePort = undefined;
+
+      if (targetPid && isPidAlive(targetPid) && isSafeDaemonPid(targetPid, this.vaultPath)) {
+        try {
+          process.kill(targetPid, "SIGTERM");
+        } catch {}
+        const termDeadline = Date.now() + 350;
+        while (Date.now() < termDeadline && isPidAlive(targetPid)) {
           await new Promise((r) => setTimeout(r, 15));
         }
+        if (isPidAlive(targetPid)) {
+          try {
+            process.kill(targetPid, "SIGKILL");
+          } catch {}
+          const killDeadline = Date.now() + 150;
+          while (Date.now() < killDeadline && isPidAlive(targetPid)) {
+            await new Promise((r) => setTimeout(r, 15));
+          }
+        }
+      } else if (this.isRunning) {
+        const stopped = await this.stopDaemonInternal();
+        if (!stopped) return false;
       }
-    } else if (this.isRunning) {
-      const stopped = await this.stopDaemon();
-      if (!stopped) return false;
-    }
 
-    if (!targetPid || !isPidAlive(targetPid)) {
-      try {
-        if (existsSync(pidFile)) unlinkSync(pidFile);
-      } catch {}
-      try {
-        if (existsSync(portFile)) unlinkSync(portFile);
-      } catch {}
-    }
+      if (!targetPid || !isPidAlive(targetPid)) {
+        try {
+          if (existsSync(pidFile)) unlinkSync(pidFile);
+        } catch {}
+        try {
+          if (existsSync(portFile)) unlinkSync(portFile);
+        } catch {}
+      }
 
-    this.isRunning = false;
-    this.pid = undefined;
-    this.port = this.config.server.port;
-    this.lastPortFallback = undefined;
+      this.isRunning = false;
+      this.pid = undefined;
+      this.port = this.config.server.port;
+      this.lastPortFallback = undefined;
 
-    return await this.startDaemon();
+      return await this.startDaemonInternal();
+    });
   }
 
   public async installService(): Promise<ActionResult> {
-    const res = await this.runCli(["service", "install", "--vault", this.vaultPath]);
-    if (res.code === 0) {
-      this.loadLocalConfig();
-      this.notify();
-      return { success: true };
-    }
-    return {
-      success: false,
-      error:
-        res.stderr.trim() ||
-        res.stdout.trim() ||
-        `CLI service install exited with code ${res.code}`,
-    };
+    return this.withLifecycleLock(async () => {
+      // Stop any running daemon cleanly before handing over to OS boot service
+      const pidFile = join(this.vaultPath, LERNSTOFF_DIR, "daemon.pid");
+      if (this.isRunning || existsSync(pidFile)) {
+        await this.stopDaemonInternal();
+      }
+
+      const res = await this.runCli(["service", "install", "--vault", this.vaultPath]);
+      if (res.code === 0) {
+        this.loadLocalConfig();
+        // Wait briefly for OS service manager (launchd/systemd) to bring the daemon online
+        for (let i = 0; i < 25; i++) {
+          const ok = await this.checkDaemon({ skipMetrics: true });
+          if (ok) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        this.notify();
+        return { success: true };
+      }
+      return {
+        success: false,
+        error:
+          res.stderr.trim() ||
+          res.stdout.trim() ||
+          `CLI service install exited with code ${res.code}`,
+      };
+    });
   }
 
   public async uninstallService(): Promise<ActionResult> {
-    const res = await this.runCli(["service", "uninstall", "--vault", this.vaultPath]);
-    if (res.code === 0) {
-      this.loadLocalConfig();
-      this.notify();
-      return { success: true };
-    }
-    return {
-      success: false,
-      error:
-        res.stderr.trim() ||
-        res.stdout.trim() ||
-        `CLI service uninstall exited with code ${res.code}`,
-    };
+    return this.withLifecycleLock(async () => {
+      const res = await this.runCli(["service", "uninstall", "--vault", this.vaultPath]);
+      if (res.code === 0) {
+        this.loadLocalConfig();
+        await this.checkDaemon({ skipMetrics: true });
+        this.notify();
+        return { success: true };
+      }
+      return {
+        success: false,
+        error:
+          res.stderr.trim() ||
+          res.stdout.trim() ||
+          `CLI service uninstall exited with code ${res.code}`,
+      };
+    });
   }
 
   /**

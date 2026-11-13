@@ -190,23 +190,25 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       .setDesc(t("settings.daemon.autoStartBootDesc"))
       .addToggle((toggle) =>
         toggle.setValue(this.client.config.server.autoStartOnBoot).onChange(async (val) => {
-          if (val) {
-            const res = await this.client.installService();
-            if (res.success) {
-              new Notice(t("notices.registeredBootAutoStart"));
+          await runDaemonAction(async () => {
+            if (val) {
+              const res = await this.client.installService();
+              if (res.success) {
+                new Notice(t("notices.registeredBootAutoStart"));
+              } else {
+                toggle.setValue(false);
+                new Notice(t("notices.registerBootAutoStartFailed", { error: res.error }));
+              }
             } else {
-              toggle.setValue(false);
-              new Notice(t("notices.registerBootAutoStartFailed", { error: res.error }));
+              const res = await this.client.uninstallService();
+              if (res.success) {
+                new Notice(t("notices.unregisteredBootAutoStart"));
+              } else {
+                toggle.setValue(true);
+                new Notice(t("notices.unregisterBootAutoStartFailed", { error: res.error }));
+              }
             }
-          } else {
-            const res = await this.client.uninstallService();
-            if (res.success) {
-              new Notice(t("notices.unregisteredBootAutoStart"));
-            } else {
-              toggle.setValue(true);
-              new Notice(t("notices.unregisterBootAutoStartFailed", { error: res.error }));
-            }
-          }
+          });
         }),
       );
 
@@ -233,7 +235,7 @@ export class LernstoffSettingsTab extends PluginSettingTab {
           inputEl.addEventListener("focus", () => {
             this.isPortInputFocused = true;
           });
-          inputEl.addEventListener("blur", () => {
+          inputEl.addEventListener("blur", async () => {
             this.isPortInputFocused = false;
             const invalidDom =
               typeof inputEl.value === "string" && parseValidPort(inputEl.value) === null;
@@ -245,6 +247,20 @@ export class LernstoffSettingsTab extends PluginSettingTab {
                 inputEl.value = safeVal;
               }
               new Notice(t("notices.invalidServerPort"));
+              return;
+            }
+            if (this.client.isRunning && this.client.config.server.port !== this.client.port) {
+              await runDaemonAction(async () => {
+                new Notice(t("notices.daemonRestarting"));
+                await this.client.stopDaemon();
+                this.client.updateConfig(this.client.config);
+                const ok = await this.client.startDaemon();
+                if (ok) {
+                  new Notice(t("notices.daemonOnline"));
+                } else {
+                  new Notice(t("notices.daemonRestartFailedTab"));
+                }
+              });
             }
           });
         }
@@ -255,14 +271,17 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       this.syncDaemonStatusUi();
     });
 
-    new Setting(containerEl)
-      .setName(t("settings.daemon.cliPathName"))
-      .setDesc(t("settings.daemon.cliPathDesc"))
-      .addText((text) =>
-        text.setValue(this.client.cliPathOverride || "").onChange((val) => {
-          this.client.cliPathOverride = val.trim() || undefined;
-        }),
-      );
+    const effectiveCliPath = this.client.cliPathOverride || this.client.getDetectedCliPath();
+    if (effectiveCliPath) {
+      new Setting(containerEl)
+        .setName(t("settings.daemon.cliPathName"))
+        .setDesc(t("settings.daemon.cliPathDesc"))
+        .addText((text) =>
+          text.setValue(effectiveCliPath).onChange((val) => {
+            this.client.cliPathOverride = val.trim() || undefined;
+          }),
+        );
+    }
 
     // =========================================================================
     // Module 2: AI Agent One-Click Integration

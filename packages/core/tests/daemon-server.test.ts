@@ -255,9 +255,26 @@ describe("Unified Background HTTP/SSE Daemon Server", () => {
       const health = await fetch(`http://127.0.0.1:${boundPort}/health`).then((r) => r.json());
       expect(health.port).toBe(customPort);
       expect(health.requestedPort).toBe(customPort);
+      expect(typeof health.alias).toBe("string");
+      expect(health.alias.length).toBeGreaterThan(0);
     } finally {
       await customDaemon.stop();
     }
+  });
+
+  it("forbids ghost port when same vault already has a live daemon on a different port", async () => {
+    const livePort = await daemon.start();
+    const otherPort = await allocateFreePort();
+
+    const secondDaemon = new DaemonServer({
+      vaultPath: tempDir,
+      qmdBridge: bridge,
+    });
+    secondDaemon.config.server.port = otherPort;
+
+    await expect(secondDaemon.start()).rejects.toThrow(
+      new RegExp(`is already running on port ${livePort}\\. Preventing duplicate instance\\.`),
+    );
   });
 
   it("cleans up daemon.port and daemon.pid on graceful stop", async () => {

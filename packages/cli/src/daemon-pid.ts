@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
-import { LERNSTOFF_DIR } from "@lernstoff/core/config";
+import { LERNSTOFF_DIR, getVaultAlias } from "@lernstoff/core/config";
 
 /**
  * Check if a process ID is currently running in the OS.
@@ -113,6 +113,17 @@ export function getRunningDaemonInfo(vaultPath: string): RunningDaemonInfo | nul
   return { pid, port };
 }
 
+export function cleanupDaemonStateFiles(vaultPath: string): void {
+  if (!vaultPath || !existsSync(vaultPath)) return;
+  const lernstoffDir = join(resolve(vaultPath), LERNSTOFF_DIR);
+  for (const name of ["daemon.pid", "daemon.port", "daemon.alias"]) {
+    try {
+      const f = join(lernstoffDir, name);
+      if (existsSync(f)) unlinkSync(f);
+    } catch {}
+  }
+}
+
 /**
  * Gracefully kill a running daemon process.
  */
@@ -138,12 +149,21 @@ export function killDaemonProcess(pid: number, timeoutMs = 3000): boolean {
     process.kill(pid, "SIGKILL");
   } catch {}
 
+  const killStart = Date.now();
+  while (Date.now() - killStart < 500) {
+    if (!isPidAlive(pid)) return true;
+    try {
+      execSync("sleep 0.02");
+    } catch {}
+  }
+
   return !isPidAlive(pid);
 }
 
 export interface DiscoveredDaemon {
   pid: number;
   vaultPath: string;
+  alias?: string;
   port?: number;
   requestedPort?: number;
   uptime?: number;
@@ -180,7 +200,10 @@ export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
   for (const line of lines) {
     if (!line.trim() || !looksLikeLernstoffDaemon(line)) continue;
     // Check if process is running a server command
-    if (!line.includes("server") || (!line.includes("start") && !line.includes("daemon-server"))) {
+    if (
+      !line.includes("server") ||
+      (!line.includes("start") && !line.includes("restart") && !line.includes("daemon-server"))
+    ) {
       continue;
     }
 
@@ -198,15 +221,38 @@ export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
     if (!isPidAlive(pid)) continue;
     seenPids.add(pid);
 
-    // Extract vault path: e.g. --vault /path/to/vault or --vault="/path/to/vault"
-    const vaultMatch = line.match(/--vault(?:=|\s+)("([^"]+)"|'([^']+)'|([^\s]+))/);
+    // Extract vault path: handles quoted paths and unquoted paths with spaces from ps output
+    const vaultMatch = line.match(
+      /--vault(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(.+?))(?=\s+--[a-zA-Z-]+|$)/,
+    );
     let vaultPath = "";
     if (vaultMatch) {
-      vaultPath = resolve(vaultMatch[2] || vaultMatch[3] || vaultMatch[4] || "");
+      const rawVault = (vaultMatch[1] || vaultMatch[2] || vaultMatch[3] || "").trim();
+      if (rawVault) vaultPath = resolve(rawVault);
+    }
+    if (!vaultPath && process.platform !== "win32") {
+      try {
+        const lsofOut = execSync(`lsof -p ${pid} -a -d cwd -Fn`, {
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 600,
+        }).toString("utf-8");
+        const cwdLine = lsofOut.split(/\r?\n/).find((l) => l.startsWith("n"));
+        if (cwdLine && cwdLine.length > 1) {
+          vaultPath = resolve(cwdLine.slice(1).trim());
+        }
+      } catch {}
     }
     if (!vaultPath) continue;
 
     const isOrphanedVault = !existsSync(vaultPath);
+    let alias: string | undefined = getVaultAlias(vaultPath);
+    const aliasFile = join(vaultPath, LERNSTOFF_DIR, "daemon.alias");
+    if (existsSync(aliasFile)) {
+      try {
+        const parsedAlias = readFileSync(aliasFile, "utf-8").trim();
+        if (parsedAlias) alias = parsedAlias;
+      } catch {}
+    }
 
     // Try reading local daemon.port
     let port: number | undefined;
@@ -240,6 +286,9 @@ export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
           if (data && data.status === "ok") {
             uptime = data.uptime;
             requestedPort = data.requestedPort;
+            if (typeof data.alias === "string" && data.alias.trim()) {
+              alias = data.alias.trim();
+            }
             if (data.vault && resolve(String(data.vault)) !== vaultPath) {
               // Port collision with a different vault
               status = "unhealthy";
@@ -256,6 +305,7 @@ export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
     discovered.push({
       pid,
       vaultPath,
+      alias,
       port,
       requestedPort,
       uptime,
@@ -270,26 +320,23 @@ export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
 /**
  * Stop all running Lernstoff daemons found across the system.
  */
-export async function stopAllRunningDaemons(): Promise<{ stopped: number; errors: string[] }> {
+export async function stopAllRunningDaemons(options?: {
+  stopSupervision?: (vaultPath: string) => void;
+}): Promise<{ stopped: number; errors: string[] }> {
   const daemons = await listAllRunningDaemons();
   let stopped = 0;
   const errors: string[] = [];
 
   for (const d of daemons) {
+    if (d.vaultPath && options?.stopSupervision) {
+      try {
+        options.stopSupervision(d.vaultPath);
+      } catch {}
+    }
     const ok = killDaemonProcess(d.pid);
     if (ok) {
       stopped++;
-      // Clean up PID/port files if vault directory exists
-      if (d.vaultPath && existsSync(d.vaultPath)) {
-        try {
-          const pidFile = join(d.vaultPath, LERNSTOFF_DIR, "daemon.pid");
-          if (existsSync(pidFile)) unlinkSync(pidFile);
-        } catch {}
-        try {
-          const portFile = join(d.vaultPath, LERNSTOFF_DIR, "daemon.port");
-          if (existsSync(portFile)) unlinkSync(portFile);
-        } catch {}
-      }
+      cleanupDaemonStateFiles(d.vaultPath);
     } else {
       errors.push(`Failed to stop process PID ${d.pid} (${d.vaultPath})`);
     }
