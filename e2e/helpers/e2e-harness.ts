@@ -114,6 +114,7 @@ export async function createE2eSandbox(options: { seedPort?: boolean } = {}): Pr
     XDG_CONFIG_HOME: join(homeDir, ".config"),
     PATH: `${binDir}:${dirname(process.execPath)}:${process.env.PATH || ""}`,
     NO_COLOR: "1",
+    LERNSTOFF_PARENT_PID: String(process.pid),
   };
   // Ensure VITEST env does not force 100ms mock-only behavior in real subprocess E2E runs
   delete env.VITEST;

@@ -34,6 +34,10 @@ export interface DaemonServerOptions {
   watcher?: VaultWatcher;
   vaultOps?: VaultOps;
   pipeline?: HippocampalPipeline;
+  parentPid?: number;
+  exitFn?: (code: number) => void;
+  vaultGuardIntervalMs?: number;
+  parentGuardIntervalMs?: number;
 }
 
 export class DaemonServer {
@@ -50,10 +54,20 @@ export class DaemonServer {
   private sseClients: Set<ServerResponse> = new Set();
   private mcpHandler: any;
   private isClosing = false;
+  private parentPid?: number;
+  private exitFn: (code: number) => void;
+  private vaultGuardIntervalMs: number;
+  private parentGuardIntervalMs: number;
+  private vaultGuardTimer: NodeJS.Timeout | null = null;
+  private parentGuardTimer: NodeJS.Timeout | null = null;
 
   constructor(options: DaemonServerOptions) {
     this.vaultPath = resolve(options.vaultPath);
     this.config = options.config || loadConfig(this.vaultPath);
+    this.parentPid = options.parentPid;
+    this.exitFn = options.exitFn || ((code) => process.exit(code));
+    this.vaultGuardIntervalMs = options.vaultGuardIntervalMs ?? 2000;
+    this.parentGuardIntervalMs = options.parentGuardIntervalMs ?? 1000;
     this.qmdBridge =
       options.qmdBridge || new QmdBridge({ vaultPath: this.vaultPath, config: this.config });
     this.watcher =
@@ -122,10 +136,16 @@ export class DaemonServer {
     const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
     mkdirSync(lernstoffDir, { recursive: true });
 
+    // Note: When port conflict occurs and auto-increment binds to a fallback port (this.port !== desiredPort),
+    // we record the active bound port in .lernstoff/daemon.port and /health, but DO NOT overwrite
+    // .lernstoff/config.json. The user's preferred port remains intact, allowing clean automatic return
+    // to the preferred port when the conflicting process terminates.
     const configPath = getConfigPath(this.vaultPath);
-    const persistedPortDiffers =
-      existsSync(configPath) && loadConfig(this.vaultPath).server.port !== this.port;
-    if (this.port !== desiredPort || persistedPortDiffers) {
+    if (
+      this.port === desiredPort &&
+      existsSync(configPath) &&
+      loadConfig(this.vaultPath).server.port !== this.port
+    ) {
       saveConfig(this.vaultPath, {
         server: { ...this.config.server, port: this.port },
       });
@@ -138,7 +158,49 @@ export class DaemonServer {
     this.watcher.start();
     // Warm up QMD index in background
     this.qmdBridge.update().catch(() => {});
+
+    // Start anti-orphan watchdogs (Vault directory existence + parent PID livelink)
+    this.startWatchdogs();
+
     return this.port;
+  }
+
+  private startWatchdogs(): void {
+    // 1. Vault Directory Watchdog: terminate if the vault directory is deleted from disk
+    this.vaultGuardTimer = setInterval(() => {
+      if (!existsSync(this.vaultPath)) {
+        console.warn(
+          `[Lernstoff Daemon] Vault directory no longer exists on disk: ${this.vaultPath}. Terminating.`,
+        );
+        this.stop().finally(() => {
+          this.exitFn(0);
+        });
+      }
+    }, this.vaultGuardIntervalMs);
+    this.vaultGuardTimer.unref();
+
+    // 2. Parent PID Life-link Guard: terminate if parent test runner / caller has exited
+    const envParentPid = process.env.LERNSTOFF_PARENT_PID
+      ? parseInt(process.env.LERNSTOFF_PARENT_PID, 10)
+      : undefined;
+    const parentPid =
+      this.parentPid ??
+      (envParentPid && Number.isInteger(envParentPid) && envParentPid > 0
+        ? envParentPid
+        : undefined);
+
+    if (parentPid) {
+      this.parentGuardTimer = setInterval(() => {
+        try {
+          process.kill(parentPid, 0);
+        } catch {
+          this.stop().finally(() => {
+            this.exitFn(0);
+          });
+        }
+      }, this.parentGuardIntervalMs);
+      this.parentGuardTimer.unref();
+    }
   }
 
   private async isSameVaultRunningOnPort(port: number): Promise<boolean> {
@@ -192,6 +254,15 @@ export class DaemonServer {
   public async stop(): Promise<void> {
     if (this.isClosing) return;
     this.isClosing = true;
+
+    if (this.vaultGuardTimer) {
+      clearInterval(this.vaultGuardTimer);
+      this.vaultGuardTimer = null;
+    }
+    if (this.parentGuardTimer) {
+      clearInterval(this.parentGuardTimer);
+      this.parentGuardTimer = null;
+    }
 
     const lernstoffDir = join(this.vaultPath, LERNSTOFF_DIR);
     try {

@@ -11,9 +11,22 @@ import {
   getConfigPath,
   LERNSTOFF_DIR,
 } from "@lernstoff/core/config";
-import { getRunningDaemonInfo, killDaemonProcess } from "./daemon-pid.js";
+import {
+  getRunningDaemonInfo,
+  killDaemonProcess,
+  listAllRunningDaemons,
+  stopAllRunningDaemons,
+} from "./daemon-pid.js";
 import { ServiceManager } from "./service-manager.js";
 import { CLI_VERSION } from "./version.js";
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  return `${hrs}h ${mins}m`;
+}
 
 function parseExplicitPort(rawPort: string | boolean | undefined): number | undefined {
   if (rawPort === undefined) return undefined;
@@ -48,6 +61,10 @@ function parseArgs(args: string[]) {
     "force",
     "all",
     "foreground",
+    "global",
+    "remove",
+    "sync-claude",
+    "no-sync-claude",
   ]);
 
   const flags: Record<string, string | boolean> = {};
@@ -246,11 +263,103 @@ async function main() {
           process.on("SIGINT", shutdown);
           process.on("SIGTERM", shutdown);
         }
+      } else if (action === "list" || action === "ls" || action === "ps") {
+        const daemons = await listAllRunningDaemons();
+        if (flags.json) {
+          console.log(JSON.stringify(daemons, null, 2));
+          return;
+        }
+
+        if (daemons.length === 0) {
+          console.log("No running Lernstoff daemons found.");
+          return;
+        }
+
+        console.log(
+          [
+            "PID".padEnd(8),
+            "PORT".padEnd(8),
+            "STATUS".padEnd(12),
+            "UPTIME".padEnd(12),
+            "VAULT",
+          ].join(" "),
+        );
+        console.log("-".repeat(70));
+        for (const d of daemons) {
+          const statusText =
+            d.status === "orphaned"
+              ? "⚠️ ORPHAN"
+              : d.status === "running"
+                ? "🟢 OK"
+                : "🔴 UNHEALTHY";
+          const uptimeText = d.uptime !== undefined ? formatUptime(d.uptime) : "-";
+          const vaultText = d.isOrphanedVault ? `${d.vaultPath} (DELETED)` : d.vaultPath;
+          console.log(
+            [
+              String(d.pid).padEnd(8),
+              String(d.port ?? "-").padEnd(8),
+              statusText.padEnd(12),
+              uptimeText.padEnd(12),
+              vaultText,
+            ].join(" "),
+          );
+        }
       } else if (action === "stop") {
+        if (flags.all === true) {
+          const res = await stopAllRunningDaemons();
+          if (res.stopped === 0) {
+            console.log("No running daemons to stop.");
+          } else {
+            console.log(`🛑 Stopped ${res.stopped} daemon(s).`);
+          }
+          return;
+        }
+
+        if (flags.pid !== undefined) {
+          const pid = Number(flags.pid);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            console.error(`Invalid --pid '${String(flags.pid)}'.`);
+            process.exit(1);
+          }
+          const stopped = killDaemonProcess(pid);
+          if (stopped) {
+            console.log(`🛑 Stopped daemon with PID ${pid}`);
+          } else {
+            console.log(`Failed to stop process with PID ${pid}`);
+          }
+          return;
+        }
+
+        if (flags.port !== undefined) {
+          const targetPort = parseExplicitPort(flags.port);
+          const daemons = await listAllRunningDaemons();
+          const match = daemons.find((d) => d.port === targetPort);
+          if (!match) {
+            console.log(`No daemon found listening on port ${targetPort}`);
+            return;
+          }
+          killDaemonProcess(match.pid);
+          if (match.vaultPath && existsSync(match.vaultPath)) {
+            getRunningDaemonInfo(match.vaultPath);
+          }
+          console.log(`🛑 Stopped daemon on port ${targetPort} (PID ${match.pid})`);
+          return;
+        }
+
         const existing = getRunningDaemonInfo(vaultPath);
         ServiceManager.stopSupervision(vaultPath);
         if (!existing) {
           console.log(`No daemon running for vault: ${vaultPath}`);
+          const running = await listAllRunningDaemons();
+          if (running.length > 0) {
+            console.log(`\nℹ️ Found ${running.length} other running daemon(s) on this machine:`);
+            for (const d of running) {
+              const label = d.isOrphanedVault ? " [ORPHAN / DELETED]" : "";
+              console.log(`   - Port ${d.port || "?"} (PID ${d.pid}): ${d.vaultPath}${label}`);
+            }
+            console.log(`\nTo stop all, run: lernstoff server stop --all`);
+            console.log(`To stop a specific vault, run: lernstoff server stop --vault "<path>"`);
+          }
           return;
         }
         killDaemonProcess(existing.pid);
@@ -337,13 +446,21 @@ async function main() {
         }
       } else if (action === "status") {
         let existing = getRunningDaemonInfo(vaultPath);
+        let foreignDaemon: { port: number; pid: number; vault: string } | null = null;
+
         if (!existing && flags.vault === undefined) {
           try {
-            const res = await fetch("http://127.0.0.1:8188/health");
+            const res = await fetch("http://127.0.0.1:8188/health", {
+              signal: AbortSignal.timeout(600),
+            });
             if (res.ok) {
               const data = await res.json();
               if (data && data.status === "ok") {
-                existing = { port: 8188, pid: data.pid };
+                if (data.vault && resolve(String(data.vault)) === vaultPath) {
+                  existing = { port: 8188, pid: data.pid };
+                } else if (data.vault) {
+                  foreignDaemon = { port: 8188, pid: data.pid, vault: String(data.vault) };
+                }
               }
             }
           } catch {}
@@ -353,8 +470,8 @@ async function main() {
           console.log(
             JSON.stringify(
               existing
-                ? { running: true, pid: existing.pid, port: existing.port }
-                : { running: false },
+                ? { running: true, pid: existing.pid, port: existing.port, vault: vaultPath }
+                : { running: false, foreignDaemon: foreignDaemon ?? undefined },
               null,
               2,
             ),
@@ -362,10 +479,24 @@ async function main() {
           return;
         }
 
+        const isCurrentDirectoryVault = existsSync(join(vaultPath, LERNSTOFF_DIR));
         if (existing) {
           console.log(`🟢 Daemon Running (PID ${existing.pid}, Port ${existing.port})`);
+        } else if (foreignDaemon && !isCurrentDirectoryVault) {
+          // In an external directory without --vault: surface running daemon with its vault path
+          console.log(
+            `🟢 Daemon Running (PID ${foreignDaemon.pid}, Port ${foreignDaemon.port}, Vault: ${foreignDaemon.vault})`,
+          );
         } else {
           console.log(`⚪ Daemon Stopped`);
+          if (foreignDaemon) {
+            console.log(
+              `ℹ️ Another daemon (PID ${foreignDaemon.pid}) is active on Port ${foreignDaemon.port} for vault:\n   ${foreignDaemon.vault}`,
+            );
+            console.log(
+              `   Run 'lernstoff server list' to see all daemons, or 'lernstoff server stop --all' to stop them.`,
+            );
+          }
         }
       } else if (action === "logs") {
         const logPath = join(vaultPath, LERNSTOFF_DIR, "daemon.log");
@@ -455,6 +586,48 @@ async function main() {
       break;
     }
 
+    case "rule": {
+      const {
+        installLernstoffRule,
+        removeLernstoffRule,
+        LERNSTOFF_RULE_SNIPPET,
+        LERNSTOFF_MARKER_START,
+        LERNSTOFF_MARKER_END,
+      } = await import("@lernstoff/core");
+      const action = subCommand || "show";
+      const target = (flags.target as any) || "all";
+      const isGlobal = !!flags.global;
+      const projectPath = (flags.project as string) || vaultPath;
+
+      if (action === "show") {
+        console.log(
+          `${LERNSTOFF_MARKER_START}\n${LERNSTOFF_RULE_SNIPPET}\n${LERNSTOFF_MARKER_END}`,
+        );
+      } else if (action === "install") {
+        const result = installLernstoffRule({
+          global: isGlobal,
+          target,
+          projectPath,
+          syncClaude: flags["sync-claude"] !== "false" && !flags["no-sync-claude"],
+        });
+        console.log(`✅ Installed Lernstoff rule to:\n   ${result.updatedFiles.join("\n   ")}`);
+        if (result.syncedClaudeFiles.length > 0) {
+          console.log(`🔗 Synced @AGENTS.md into:\n   ${result.syncedClaudeFiles.join("\n   ")}`);
+        }
+      } else if (action === "remove") {
+        const result = removeLernstoffRule({
+          global: isGlobal,
+          target,
+          projectPath,
+        });
+        console.log(`🗑️ Removed Lernstoff rule from:\n   ${result.updatedFiles.join("\n   ")}`);
+      } else {
+        console.error(`Unknown rule action '${action}'. Expected: show, install, remove`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "doctor": {
       const { AgentInstaller } = await import("./agent-installer.js");
       const report = await AgentInstaller.runDoctor({
@@ -496,14 +669,15 @@ async function main() {
 Usage:
   lernstoff init [--vault <path>]
   lernstoff config <get|set|list|reset|path> [key] [value] [--vault <path>]
-  lernstoff server <start|stop|restart|status|logs> [--daemon|--foreground] [--port <n>]
+  lernstoff server <start|stop|restart|status|logs|list> [--daemon|--foreground] [--port <n>] [--all]
   lernstoff service <install|uninstall|status> [--vault <path>]
   lernstoff mcp [--vault <path>]
   lernstoff search <query> [--lex|--vec] [--limit <n>] [--json]
   lernstoff inquiry <list|add|close|reopen> [textOrId] [--json]
   lernstoff scratchpad <list|add|consolidate|gc> [text] [--json]
   lernstoff lint [--vault <path>] [--json]
-  lernstoff skill <install|show> [--target <all|claude|cursor|antigravity>]
+  lernstoff skill <install|show> [--target <all|claude|cursor|antigravity|codex|workbuddy>]
+  lernstoff rule <install|remove|show> [--global] [--target <all|codex|claude|antigravity|workbuddy>] [--project <path>]
   lernstoff plugin install [--vault <path>]
   lernstoff doctor [--pull-models|--cleanup]
 `);

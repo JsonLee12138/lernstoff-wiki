@@ -1,42 +1,35 @@
-# Implementation Plan: Daemon Auto-Start Handover & Single-Instance Port Guard
+# Implementation Plan
 
-## Slices Overview
+## Slice 1: `x18n` Setup & i18n Runtime Helper
+- [x] **Status:** Pending
+- **Files**:
+  - `package.json` (`@x18n/cli` & `@x18n/core` already installed; add `"i18n:check": "x18n check"`)
+  - `x18n.config.ts` (configure `sourceLocale: "en"`, `locales: ["en", "zh", "zh-TW", "ja", "ko"]`, `resources`, `usage.calls`, `glossary`, `checks`)
+  - `packages/obsidian-plugin/src/i18n.ts` (`resolveObsidianLocale`, `normalizeLocale`, `getLocale`, `t` with `{param}` interpolation and `en` fallback)
+  - `packages/obsidian-plugin/src/locales/{en,zh,zh-TW,ja,ko}.json` (initial structure verified by `x18n doctor`)
+  - `packages/obsidian-plugin/tests/i18n.test.ts` (unit tests for `getLanguage()`, `localStorage` fallback, `zh` vs `zh-TW` normalization, unknown locale -> `en` fallback, placeholder interpolation, missing key fallback)
+- **Verification**:
+  - `pnpm --filter @lernstoff/obsidian-plugin test` & `npx x18n doctor --json` pass.
 
-- [x] **Slice 1: Core Same-Vault Collision Blocker**
-  - **Status:** Completed
-  - **Target Files:**
-    - `packages/core/src/daemon-server.ts`
-    - `packages/core/tests/daemon-server.test.ts`
-  - **Tasks:**
-    - Implement same-vault `/health` detection helper on `EADDRINUSE`.
-    - If occupied by the same canonical vault, throw immediately instead of incrementing port and mutating config.
-    - Write unit test validating that starting a second `DaemonServer` on the same vault throws on port conflict rather than advancing port.
+## Slice 2: Extract User-Facing Strings in `main.ts` & `settings-tab.ts`
+- [x] **Status:** Pending
+- **Files**:
+  - `packages/obsidian-plugin/src/main.ts` (replace command names, notices, status bar strings with `t("...")`)
+  - `packages/obsidian-plugin/src/settings-tab.ts` (replace cockpit header, 5 modules, controls, placeholders, notices, log UI strings with `t("...")`)
+  - `packages/obsidian-plugin/src/locales/en.json` (all source keys populated via `x18n apply` / `x18n set`)
+- **Verification**:
+  - `npx x18n check --only missing-key,unused-key,placeholder-mismatch,param-mismatch --json` exits 0.
+  - Existing `packages/obsidian-plugin/tests/*.test.ts` and `e2e/03-obsidian-plugin-cockpit.e2e.test.ts` pass 100% unchanged.
 
-- [x] **Slice 2: CLI Supervision Handover & Foreground Single-Instance Guard**
-  - **Status:** Completed
-  - **Target Files:**
-    - `packages/cli/src/service-manager.ts`
-    - `packages/cli/src/bin.ts`
-    - `packages/cli/tests/cli.test.ts`
-  - **Tasks:**
-    - In `ServiceManager.installService(vaultPath)`, detect existing running daemon and gracefully kill it before calling `launchctl load` or `systemctl enable --now`.
-    - In `bin.ts` `server start` (foreground mode), add `getRunningDaemonInfo(vaultPath)` guard to prevent running duplicate instances.
-    - Write unit test verifying that `ServiceManager.installService` stops existing daemon and preserves configured port.
-
-- [x] **Slice 3: Plugin Secure Detection & Idempotent Start**
-  - **Status:** Completed
-  - **Target Files:**
-    - `packages/obsidian-plugin/src/daemon-client.ts`
-    - `packages/obsidian-plugin/tests/plugin.test.ts`
-  - **Tasks:**
-    - Update `checkDaemon()` to probe `this.config.server.port` as fallback when state files are missing, enforcing strict canonical vault matching.
-    - Add self-healing of state files (`daemon.port`, `daemon.pid`) when daemon is detected on configured port.
-    - Add idempotent guard in `startDaemon()` so active running daemons are not redundantly spawned.
-    - Write unit tests for fallback detection, cross-vault rejection, and idempotent start.
-
-- [x] **Slice 4: Full End-to-End Gate Verification**
-  - **Status:** Completed
-  - **Tasks:**
-    - Run `pnpm build` and `scripts/sync-plugin-assets.mjs`.
-    - Run `pnpm test`.
-    - Run `bash scripts/gate-check.sh` and ensure all 4 gates pass.
+## Slice 3: Translations (`zh`, `zh-TW`, `ja`, `ko`), Verification & Gate Integration
+- [x] **Status:** Pending
+- **Files**:
+  - `packages/obsidian-plugin/src/locales/zh.json` (via `x18n apply`)
+  - `packages/obsidian-plugin/src/locales/zh-TW.json` (via `x18n apply`)
+  - `packages/obsidian-plugin/src/locales/ja.json` (via `x18n apply`)
+  - `packages/obsidian-plugin/src/locales/ko.json` (via `x18n apply`)
+  - `packages/obsidian-plugin/tests/settings-tab.test.ts` (add multi-locale rendering test verifying `zh`/`zh-TW`/`ja`/`ko` UI output when `getLanguage` returns each locale)
+  - `scripts/gate-check.sh` (add `pnpm i18n:check`)
+- **Verification**:
+  - `pnpm i18n:check` passes with 0 errors and 100% coverage across `en`, `zh`, `zh-TW`, `ja`, `ko`.
+  - `bash scripts/gate-check.sh` and `pnpm test:e2e` pass completely.

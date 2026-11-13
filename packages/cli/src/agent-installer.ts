@@ -1,4 +1,11 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  copyFileSync,
+} from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -9,50 +16,33 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_SKILL_MD = `---
 name: lernstoff-wiki
-description: Comprehensive MCP Tool Manual and Cognitive Selective Note-Taking Protocol for AI Agents and Obsidian. Use when exploring codebases, reading papers, querying vault memory, verifying epistemic deltas, defending propositions through Socratic guards, and maintaining evergreen notes.
+description: Cognitive selective note-taking protocol and MCP engine for Obsidian. Activate when exploring codebases, researching architectures, conducting bug postmortems, reading technical papers/docs, recalling prior decisions, or persisting project knowledge to Obsidian.
 ---
 
-# \`lernstoff-wiki\` MCP Tool Manual & Protocol Guide
+# \`lernstoff-wiki\` Cognitive Protocol
 
-\`lernstoff-wiki\` provides a headless cognitive selective note-taking engine for AI programming agents (Claude Code, Cursor, Antigravity, OpenCode) and Obsidian. It implements a 3-stage hippocampal filtering gate, Socratic proposition defense, curiosity inquiry tracking, and Monte Carlo Personalized PageRank associative search.
+Headless cognitive note-taking engine implementing a 3-stage hippocampal novelty gate, Socratic proposition defense, curiosity inquiry tracking, and Monte Carlo Personalized PageRank memory search.
 
----
+## 1. Decision Tree & Core Workflows
 
-## 1. Unified MCP Capabilities (8 Tools + 1 Resource)
+Choose the matching workflow based on your current task:
+- Workflow 1: Research & Crystallize (search_memory -> probe_delta -> Socratic defense -> crystallize_note)
+- Workflow 2: Vault Health & Synthesize (lint_wiki -> get_note -> SYNTHESIZE_CLUSTER -> manage_inquiries close)
+- Workflow 3: Scratchpad & Consolidate (consolidate_scratchpad inspect -> promote -> gc)
 
-\`lernstoff-wiki\` registers 8 native MCP tools and 1 dynamic resource template under the \`lernstoff\` MCP server namespace.
+## 2. Non-Negotiable Guardrails
 
-### Tool Matrix
-
-| Tool Name                          | Core Purpose                      | Typical Latency      | Key Output / Side Effect                                                        |
-| :--------------------------------- | :-------------------------------- | :------------------- | :------------------------------------------------------------------------------ |
-| \`lernstoff_probe_delta\`            | 3-stage hippocampal novelty gate  | 1ms (G1) ~ 20ms (G3) | Discards noise (>= 75%), defers to scratchpad, or escalates survivors          |
-| \`lernstoff_crystallize_note\`       | Atomic proposition note synthesis | < 15ms               | Creates/amends \`wiki/concepts/<slug>.md\` with Socratic frontmatter              |
-| \`lernstoff_manage_inquiries\`       | Curiosity tree lifecycle          | < 5ms                | Manages \`wiki/inquiries.md\` (\`list\`, \`add\`, \`close\`, \`reopen\`)                  |
-| \`lernstoff_consolidate_scratchpad\` | Scratchpad promotion & GC         | < 10ms               | Scans multi-source collisions (>= 2) & prunes expired entries (> 14d)           |
-| \`lernstoff_lint_wiki\`              | Socratic vault health audit       | < 25ms               | Detects orphan notes (in-degree 0), latent contradictions, synthesis candidates |
-| \`lernstoff_search_memory\`          | Hybrid search + PPR walk          | 15ms ~ 40ms          | Vector + BM25 hits + 2-hop Monte Carlo associative graph neighborhood           |
-| \`lernstoff_get_note\`               | Exact line slicing & backlinks    | < 5ms                | Returns note content with line numbers (\`path:from:count\`) & inbound backlinks  |
-| \`lernstoff_status\`                 | Health & metrics snapshot         | < 5ms                | Reports QMD store status, active inquiries count, scratchpad metrics            |
-| \`lernstoff://{+path}\` _(Resource)_ | Direct note content URI           | < 2ms                | Streams raw note Markdown directly into agent context                           |
-
----
-
-## 2. Detailed Tool Specifications
-
-1. \`lernstoff_probe_delta\`: Evaluates candidate proposition claims through the 3-stage hippocampal filter before writing to disk.
-2. \`lernstoff_crystallize_note\`: Synthesizes a permanent proposition note in \`wiki/concepts/<slug>.md\`. Enforces Socratic defense constraints.
-3. \`lernstoff_manage_inquiries\`: Interacts with the curiosity question tree stored in \`wiki/inquiries.md\`.
-4. \`lernstoff_consolidate_scratchpad\`: Scans and manages the fast scratchpad buffer (\`inbox/scratchpad.md\`).
-5. \`lernstoff_lint_wiki\`: Performs an automated epistemic health check of the Obsidian Vault.
-6. \`lernstoff_search_memory\`: Queries vault memory with hybrid vector/keyword search combined with Monte Carlo Personalized PageRank.
-7. \`lernstoff_get_note\`: Reads note content with line slicing and extracts backlinks without loading full files into token context.
-8. \`lernstoff_status\`: Reports real-time system metrics (QMD database health, open inquiries, scratchpad buffer size, concept count).
+- Proposition-as-Title Rule: Titles MUST express a complete falsifiable claim, NEVER bare nouns or topics.
+- Anti-Orphan Requirement: Every permanent note MUST connect >= 2 typed links to existing notes.
+- Hippocampal Gate First: NEVER write directly to wiki/ or inbox/scratchpad.md without running lernstoff_probe_delta.
 `;
 
+export type TargetAgent = "all" | "claude" | "cursor" | "antigravity" | "codex" | "workbuddy";
+
 export interface InstallAgentOptions {
-  target: "all" | "claude" | "cursor" | "antigravity";
+  target: TargetAgent;
   vaultPath: string;
+  homeDir?: string;
 }
 
 export interface DoctorReport {
@@ -69,63 +59,116 @@ export interface DoctorReport {
   models: Record<string, string>;
 }
 
+export interface McpServerEntry {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
 export class AgentInstaller {
   public static getHomeDir(): string {
     return process.env.HOME || homedir();
   }
 
-  public static getMcpConfig(vaultPath: string): { command: string; args: string[] } {
+  /**
+   * Build the MCP server entry for `lernstoff`. Resolves the absolute binary
+   * next to `process.execPath` when available and includes its bin directory in
+   * `env.PATH` so GUI hosts (Antigravity, Cursor, Claude Desktop) can locate
+   * both `lernstoff` and `node` without a shell profile.
+   */
+  public static getMcpConfig(vaultPath: string): McpServerEntry {
+    const absVault = resolve(vaultPath);
+    const binDir = dirname(process.execPath);
+    const binName = process.platform === "win32" ? "lernstoff.cmd" : "lernstoff";
+    const resolvedBin = join(binDir, binName);
+    if (existsSync(resolvedBin)) {
+      const basePath = process.env.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+      const pathParts = Array.from(new Set([binDir, ...basePath.split(":")].filter(Boolean)));
+      return {
+        command: resolvedBin,
+        args: ["mcp", "--vault", absVault],
+        env: { PATH: pathParts.join(":") },
+      };
+    }
+
     return {
       command: "lernstoff",
-      args: ["mcp", "--vault", resolve(vaultPath)],
+      args: ["mcp", "--vault", absVault],
     };
   }
 
   public static installSkill(
-    target: "all" | "claude" | "cursor" | "antigravity",
+    target: TargetAgent,
     vaultPath: string,
+    options?: { homeDir?: string },
   ): string[] {
     const absVault = resolve(vaultPath);
     const installedPaths: string[] = [];
 
-    // Resolve SKILL.md template from repo if available, else fallback to embedded
-    let skillContent = DEFAULT_SKILL_MD;
-    const possibleSkillPaths = [
-      join(absVault, "skills/lernstoff-wiki/SKILL.md"),
-      join(process.cwd(), "skills/lernstoff-wiki/SKILL.md"),
-      resolve(__dirname, "../../../skills/lernstoff-wiki/SKILL.md"),
-      resolve(__dirname, "../../skills/lernstoff-wiki/SKILL.md"),
+    // Locate source skills/lernstoff-wiki directory
+    const possibleSkillDirs = [
+      join(__dirname, "../assets/skills/lernstoff-wiki"),
+      join(__dirname, "assets/skills/lernstoff-wiki"),
+      join(process.cwd(), "skills/lernstoff-wiki"),
+      join(absVault, "skills/lernstoff-wiki"),
+      resolve(__dirname, "../../../skills/lernstoff-wiki"),
+      resolve(__dirname, "../../skills/lernstoff-wiki"),
     ];
-    for (const p of possibleSkillPaths) {
-      if (existsSync(p)) {
-        try {
-          const content = readFileSync(p, "utf-8");
-          if (content.length > 100) {
-            skillContent = content;
-            break;
-          }
-        } catch {}
+
+    let sourceSkillDir: string | null = null;
+    for (const d of possibleSkillDirs) {
+      if (existsSync(join(d, "SKILL.md"))) {
+        sourceSkillDir = d;
+        break;
       }
     }
 
-    const home = AgentInstaller.getHomeDir();
+    const home = options?.homeDir || AgentInstaller.getHomeDir();
     const targets: Record<string, string[]> = {
-      claude: [join(home, ".claude/skills/lernstoff-wiki/SKILL.md")],
-      antigravity: [join(home, ".gemini/config/skills/lernstoff-wiki/SKILL.md")],
+      claude: [join(home, ".claude/skills/lernstoff-wiki")],
+      antigravity: [join(home, ".gemini/config/skills/lernstoff-wiki")],
       cursor: [
-        join(absVault, ".cursor/skills/lernstoff-wiki/SKILL.md"),
-        join(home, ".cursor/skills/lernstoff-wiki/SKILL.md"),
+        join(absVault, ".cursor/skills/lernstoff-wiki"),
+        join(home, ".cursor/skills/lernstoff-wiki"),
       ],
+      codex: [
+        join(absVault, ".agents/skills/lernstoff-wiki"),
+        join(home, ".agents/skills/lernstoff-wiki"),
+      ],
+      workbuddy: [
+        join(absVault, ".codebuddy/skills/lernstoff-wiki"),
+        join(home, ".workbuddy/skills/lernstoff-wiki"),
+      ],
+    };
+
+    const copyDirRecursive = (src: string, dest: string) => {
+      mkdirSync(dest, { recursive: true });
+      const entries = readdirSync(src, { withFileTypes: true });
+      for (const entry of entries) {
+        const srcPath = join(src, entry.name);
+        const destPath = join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyDirRecursive(srcPath, destPath);
+        } else if (entry.isFile()) {
+          copyFileSync(srcPath, destPath);
+          installedPaths.push(destPath);
+        }
+      }
     };
 
     const keys = target === "all" ? Object.keys(targets) : [target];
     for (const key of keys) {
       const paths = targets[key] || [];
-      for (const p of paths) {
+      for (const targetDir of paths) {
         try {
-          mkdirSync(dirname(p), { recursive: true });
-          writeFileSync(p, skillContent, "utf-8");
-          installedPaths.push(p);
+          if (sourceSkillDir) {
+            copyDirRecursive(sourceSkillDir, targetDir);
+          } else {
+            mkdirSync(targetDir, { recursive: true });
+            const filePath = join(targetDir, "SKILL.md");
+            writeFileSync(filePath, DEFAULT_SKILL_MD, "utf-8");
+            installedPaths.push(filePath);
+          }
         } catch {}
       }
     }
@@ -134,18 +177,24 @@ export class AgentInstaller {
   }
 
   public static installMcp(
-    target: "all" | "claude" | "cursor" | "antigravity",
+    target: TargetAgent,
     vaultPath: string,
+    options?: { homeDir?: string },
   ): string[] {
     const absVault = resolve(vaultPath);
     const mcpEntry = AgentInstaller.getMcpConfig(absVault);
     const configuredFiles: string[] = [];
-    const home = AgentInstaller.getHomeDir();
+    const home = options?.homeDir || AgentInstaller.getHomeDir();
 
     const configFiles: Record<string, string[]> = {
       claude: [join(home, ".claude.json"), join(absVault, ".mcp.json")],
       cursor: [join(absVault, ".cursor/mcp.json"), join(home, ".cursor/mcp.json")],
-      antigravity: [join(home, ".gemini/antigravity/mcp_config.json")],
+      antigravity: [
+        join(home, ".gemini/antigravity/mcp_config.json"),
+        join(home, ".gemini/config/mcp_config.json"),
+      ],
+      codex: [join(absVault, ".mcp.json")],
+      workbuddy: [join(absVault, ".mcp.json"), join(home, ".workbuddy/mcp.json")],
     };
 
     const keys = target === "all" ? Object.keys(configFiles) : [target];

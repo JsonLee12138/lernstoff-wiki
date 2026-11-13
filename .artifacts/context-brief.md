@@ -1,35 +1,31 @@
-# Context Brief: Daemon Auto-Start Handover & Single-Instance Port Guard
+# Context Brief: Obsidian Plugin i18n (`x18n`)
 
-> Target: Resolve port conflict during autostart toggle, prevent multi-port proliferation per vault, and enforce secure plugin-side detection.
+## 1. Architecture & Build Constraints
+- **Package**: `packages/obsidian-plugin` (`@lernstoff/obsidian-plugin`)
+- **Bundler**: `packages/obsidian-plugin/tsdown.config.mts` compiles `src/main.ts` -> `dist/main.js` (CJS) with `neverBundle: ["obsidian"]`, `alwaysBundle: [/^@lernstoff\//, /^zod/]`.
+- **Asset Sync**: `scripts/sync-plugin-assets.mjs` copies only `["main.js", "manifest.json", "styles.css"]`. Static JSON imports (`resolveJsonModule: true` in `tsconfig.base.json:L14`) are bundled inline into `main.js`.
+- **Separation of Concerns**:
+  - `packages/obsidian-plugin/src/daemon-client.ts` does NOT import `obsidian`; it communicates via Node `http`/`child_process`/`fs` and returns `ActionResult { success: boolean; error?: string }`.
+  - `packages/obsidian-plugin/src/main.ts` & `packages/obsidian-plugin/src/settings-tab.ts` import `obsidian` and render all UI surfaces (commands, status bar, notices, 5-module settings cockpit, logs).
 
-## 1. Affected Subsystems & Source Files
+## 2. Obsidian Official Language API
+- `packages/obsidian-plugin/node_modules/obsidian/obsidian.d.ts:L5076-L5081`:
+  - `export function getLanguage(): string;` (`@since 1.8.7`, defaults to `'en'`).
+- `packages/obsidian-plugin/manifest.json:L5`:
+  - `"minAppVersion": "1.5.0"` -> `getLanguage` may be `undefined` in Obsidian 1.5.0–1.8.6 or in Vitest mocks (`settings-tab.test.ts` and `e2e/03-obsidian-plugin-cockpit.e2e.test.ts` mock `obsidian` without `getLanguage`).
+- **Vitest Namespace Import Requirement**:
+  - `settings-tab.test.ts:L8-L224` & `e2e/03-obsidian-plugin-cockpit.e2e.test.ts:L15-L229` use `vi.mock("obsidian", () => ({ ... }))` without exporting `getLanguage`.
+  - `i18n.ts` MUST use `import * as obsidian from "obsidian"` (NOT named `import { getLanguage } from "obsidian"`) and inspect `typeof (obsidian as { getLanguage?: () => string }).getLanguage === "function"`, else fall back to `window?.localStorage?.getItem("language")` -> `"en"`.
+- Obsidian official language codes (`obsidianmd/obsidian-translations`): `en`, `zh` (Simplified Chinese), `zh-TW` (Traditional Chinese), `ja`, `ko`.
 
-1. **`packages/core/src/daemon-server.ts`**
-   - Lines 95-128: `DaemonServer.start()` port binding loop. Currently increments port blindly on `EADDRINUSE` (`desiredPort..desiredPort+100`) and writes mutated port back to `config.json`.
-   - Lines 224-241: `/health` endpoint. Already returns `{ status: "ok", port, requestedPort, pid, vault, version }`.
+## 3. Existing Test Assertions (Blast Radius)
+- `packages/obsidian-plugin/tests/settings-tab.test.ts` & `e2e/03-obsidian-plugin-cockpit.e2e.test.ts` assert exact English UI strings (`"1. Daemon & OS Boot Auto-Start"`, `"Daemon Service Status"`, `"Server Port"`, `"Start"`, `"Stop"`, `"Restart"`, `"Offline"`, `"Stopped"`, `"Port ... saved"`, `"⚠️ Restart -> :..."`, etc.).
+- Falling back to `"en"` when `getLanguage` is unmocked/absent preserves 100% backward compatibility with all existing tests.
 
-2. **`packages/cli/src/service-manager.ts`**
-   - Lines 118-165: `ServiceManager.installService()`. Generates launchd plist (`RunAtLoad=true`, `KeepAlive=true`) or systemd unit (`enable --now`). Blindly loads OS service while an unmanaged daemon process may already be running, causing port collision and port drift.
-   - Lines 167-202: `ServiceManager.stopSupervision()`. Pauses launchd/systemd supervision.
-   - Lines 207-242: `ServiceManager.uninstallService()`.
-
-3. **`packages/cli/src/bin.ts`**
-   - Lines 155-220: `server start --daemon`. Checks `getRunningDaemonInfo(vaultPath)`.
-   - Lines 220-240: `server start` (foreground). **Omits** `getRunningDaemonInfo(vaultPath)` check, blindly instantiating `DaemonServer` and starting a duplicate daemon on a newly incremented port.
-   - Lines 375-385: `service install` subcommand.
-
-4. **`packages/obsidian-plugin/src/daemon-client.ts`**
-   - Lines 270-350: `checkDaemon()`. Relies solely on existence of `.lernstoff/daemon.port`. If file is missing or unreadable, immediately returns `false` without probing `this.config.server.port`.
-   - Lines 533-575: `startDaemon()`. Directly spawns CLI process without pre-checking whether a daemon is already active on the configured port.
-   - Lines 759-832: `installService()`. Calls CLI `service install` without orchestrating handover.
-
-5. **`packages/obsidian-plugin/src/settings-tab.ts`**
-   - Lines 47-56: Displays `⚠️ Port conflict: Port ... was busy` banner when `lastPortFallback` is set.
-   - Lines 192-207: "OS Boot Auto-Start" toggle.
-
-## 2. Test Suites
-
-- `packages/core/tests/daemon-server.test.ts`
-- `packages/cli/tests/cli.test.ts`
-- `packages/obsidian-plugin/tests/plugin.test.ts`
-- `packages/obsidian-plugin/tests/settings-tab.test.ts`
+## 4. `@x18n/cli` Integration
+- Installed at repo root: `@x18n/cli@0.1.14`, `@x18n/core@0.1.14`.
+- Custom lightweight `t(key, params?)` helper is configured via `x18n.config.ts`:
+  - `sourceLocale: "en"`
+  - `locales: ["en", "zh", "zh-TW", "ja", "ko"]`
+  - `resources: [{ pattern: "packages/obsidian-plugin/src/locales/{locale}.json" }]`
+  - `usage: { include: ["packages/obsidian-plugin/src/**/*.ts"], calls: [{ callee: ["t"], key: 0, params: { arg: 1 } }] }`

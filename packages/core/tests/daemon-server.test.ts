@@ -140,7 +140,7 @@ describe("Unified Background HTTP/SSE Daemon Server", () => {
     clientReq?.destroy();
   });
 
-  it("auto-increments port when occupied, persists bound port to .lernstoff/config.json, and exposes requestedPort on /health", async () => {
+  it("auto-increments port when occupied without mutating config.json, and exposes requestedPort on /health", async () => {
     const dummyServer = createServer((_req, res) => res.end("dummy"));
     const occupiedPort = await allocateFreePort();
     saveConfig(tempDir, {
@@ -160,8 +160,9 @@ describe("Unified Background HTTP/SSE Daemon Server", () => {
       const boundPort = await collidingDaemon.start();
       expect(boundPort).toBeGreaterThan(occupiedPort);
       expect(collidingDaemon.requestedPort).toBe(occupiedPort);
-      expect(collidingDaemon.config.server.port).toBe(boundPort);
-      expect(loadConfig(tempDir).server.port).toBe(boundPort);
+      // Preferred port in config.json is NOT overwritten by fallback port
+      expect(collidingDaemon.config.server.port).toBe(occupiedPort);
+      expect(loadConfig(tempDir).server.port).toBe(occupiedPort);
 
       const healthRes = await fetch(`http://127.0.0.1:${boundPort}/health`);
       expect(healthRes.status).toBe(200);
@@ -173,6 +174,50 @@ describe("Unified Background HTTP/SSE Daemon Server", () => {
     } finally {
       await new Promise<void>((resolve) => dummyServer.close(() => resolve()));
     }
+  });
+
+  it("auto-terminates when vault directory is removed from disk (anti-orphan watchdog)", async () => {
+    let terminatedCode: number | null = null;
+    const guardedDaemon = new DaemonServer({
+      vaultPath: tempDir,
+      qmdBridge: bridge,
+      vaultGuardIntervalMs: 25,
+      exitFn: (code) => {
+        terminatedCode = code;
+      },
+    });
+
+    await guardedDaemon.start();
+    const portFile = join(tempDir, ".lernstoff/daemon.port");
+    expect(existsSync(portFile)).toBe(true);
+
+    // Simulate deleting the vault directory
+    rmSync(tempDir, { recursive: true, force: true });
+    expect(existsSync(tempDir)).toBe(false);
+
+    // Wait for watchdog to trigger
+    await new Promise((r) => setTimeout(r, 100));
+    expect(terminatedCode).toBe(0);
+    await guardedDaemon.stop();
+  });
+
+  it("auto-terminates when parent PID dies (parent livelink guard)", async () => {
+    let terminatedCode: number | null = null;
+    const deadParentPid = 999999;
+    const guardedDaemon = new DaemonServer({
+      vaultPath: tempDir,
+      qmdBridge: bridge,
+      parentPid: deadParentPid,
+      parentGuardIntervalMs: 25,
+      exitFn: (code) => {
+        terminatedCode = code;
+      },
+    });
+
+    await guardedDaemon.start();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(terminatedCode).toBe(0);
+    await guardedDaemon.stop();
   });
 
   it("prevents duplicate instance and throws on port conflict when occupied by same vault", async () => {

@@ -145,6 +145,7 @@ if (transcriptPath && fs.existsSync(transcriptPath)) {
       const step = parsed[j];
       if (!step || !Array.isArray(step.tool_calls)) continue;
       for (const tc of step.tool_calls) {
+        if (!["write_file", "edit_file"].includes(tc.name)) continue;
         const rawArgs = JSON.stringify((tc && tc.args) || {});
         if (/\.artifacts[\\/]+(SPEC|PLAN)\.md/.test(rawArgs)) {
           modifiedAfterUserInTranscript = true;
@@ -296,6 +297,8 @@ if tp and pathlib.Path(tp).exists():
         last_user = parsed[last_idx]
         for step in parsed[last_idx + 1:]:
             for call in (step.get("tool_calls") or []):
+                if call.get("name") not in ("write_file", "edit_file"):
+                    continue
                 if re.search(r"\.artifacts[\\/]+(SPEC|PLAN)\.md", json.dumps(call.get("args") or {})):
                     mod_after = True
 

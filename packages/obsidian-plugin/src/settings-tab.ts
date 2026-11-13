@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_LERNSTOFF_CONFIG, LERNSTOFF_DIR } from "@lernstoff/core/config";
 import type { DaemonClient } from "./daemon-client.js";
+import { t } from "./i18n.js";
 
 function parseValidPort(raw: string): number | null {
   const trimmed = raw.trim();
@@ -37,18 +38,19 @@ export class LernstoffSettingsTab extends PluginSettingTab {
 
   private computeStatusDesc(): string {
     if (!this.client.isRunning) {
-      return "⚪ Daemon Stopped";
+      return t("settings.daemon.statusStopped");
     }
-    const base = `🟢 Running on http://127.0.0.1:${this.client.port} (PID ${this.client.pid || "unknown"})`;
-    if (this.client.config.server.port !== this.client.port) {
-      return `${base} · ⚠️ Port ${this.client.config.server.port} saved — click Restart to switch`;
-    }
+    const pid = this.client.pid || t("settings.daemon.pidUnknown");
+    const base = t("settings.daemon.statusRunning", { port: this.client.port, pid });
     if (
       this.client.lastPortFallback &&
       this.client.lastPortFallback.actualPort === this.client.port
     ) {
       const { requestedPort, actualPort } = this.client.lastPortFallback;
-      return `${base} · ⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`;
+      return `${base}${t("settings.daemon.statusFallbackSuffix", { requestedPort, actualPort })}`;
+    }
+    if (this.client.config.server.port !== this.client.port) {
+      return `${base}${t("settings.daemon.statusPendingRestartSuffix", { port: this.client.config.server.port })}`;
     }
     return base;
   }
@@ -83,16 +85,16 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "🧠 Lernstoff Wiki - Configuration Cockpit" });
+    containerEl.createEl("h2", { text: t("settings.header.title") });
     containerEl.createEl("p", {
-      text: "Headless cognitive selective note-taking engine with zero-config out-of-the-box defaults. Single source of truth backed by .lernstoff/config.json.",
+      text: t("settings.header.description"),
       cls: "setting-item-description",
     });
 
     // =========================================================================
     // Module 1: Daemon & OS Boot Auto-Start Control
     // =========================================================================
-    containerEl.createEl("h3", { text: "1. Daemon & OS Boot Auto-Start" });
+    containerEl.createEl("h3", { text: t("settings.daemon.moduleTitle") });
 
     const runDaemonAction = async (fn: () => Promise<void>) => {
       if (this.isActionInFlight) return;
@@ -108,31 +110,27 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     };
 
     this.daemonStatusSetting = new Setting(containerEl)
-      .setName("Daemon Service Status")
+      .setName(t("settings.daemon.serviceStatus"))
       .setDesc(this.computeStatusDesc())
       .addButton((btn) => {
         this.startBtn = btn;
         return btn
-          .setButtonText("Start")
+          .setButtonText(t("settings.daemon.start"))
           .setCta()
           .setDisabled(this.isActionInFlight || this.client.isRunning)
           .onClick(async () => {
             await runDaemonAction(async () => {
-              new Notice("Starting Lernstoff Daemon...");
+              new Notice(t("notices.daemonStarting"));
               const ok = await this.client.startDaemon();
               if (ok) {
                 if (this.client.lastPortFallback) {
                   const { requestedPort, actualPort } = this.client.lastPortFallback;
-                  new Notice(
-                    `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
-                  );
+                  new Notice(t("notices.daemonPortFallback", { requestedPort, actualPort }));
                 } else {
-                  new Notice("🟢 Lernstoff Daemon online.");
+                  new Notice(t("notices.daemonOnline"));
                 }
               } else {
-                new Notice(
-                  "❌ Failed to start Lernstoff Daemon. Check logs in .lernstoff/daemon.log",
-                );
+                new Notice(t("notices.daemonStartFailed"));
               }
             });
           });
@@ -140,23 +138,21 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       .addButton((btn) => {
         this.restartBtn = btn;
         return btn
-          .setButtonText("Restart")
+          .setButtonText(t("settings.daemon.restart"))
           .setDisabled(this.isActionInFlight)
           .onClick(async () => {
             await runDaemonAction(async () => {
-              new Notice("Restarting Lernstoff Daemon...");
+              new Notice(t("notices.daemonRestarting"));
               const ok = await this.client.restartDaemon();
               if (ok) {
                 if (this.client.lastPortFallback) {
                   const { requestedPort, actualPort } = this.client.lastPortFallback;
-                  new Notice(
-                    `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
-                  );
+                  new Notice(t("notices.daemonPortFallback", { requestedPort, actualPort }));
                 } else {
-                  new Notice("🟢 Lernstoff Daemon online.");
+                  new Notice(t("notices.daemonOnline"));
                 }
               } else {
-                new Notice("❌ Failed to restart Lernstoff Daemon.");
+                new Notice(t("notices.daemonRestartFailedTab"));
               }
             });
           });
@@ -164,24 +160,24 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       .addButton((btn) => {
         this.stopBtn = btn;
         return btn
-          .setButtonText("Stop")
+          .setButtonText(t("settings.daemon.stop"))
           .setWarning()
           .setDisabled(this.isActionInFlight || !this.client.isRunning)
           .onClick(async () => {
             await runDaemonAction(async () => {
               const ok = await this.client.stopDaemon();
               if (ok) {
-                new Notice("🛑 Stopped Lernstoff Daemon.");
+                new Notice(t("notices.daemonStopped"));
               } else {
-                new Notice("❌ Failed to stop Lernstoff Daemon.");
+                new Notice(t("notices.daemonStopFailed"));
               }
             });
           });
       });
 
     new Setting(containerEl)
-      .setName("Auto-Start on Obsidian Open")
-      .setDesc("Automatically start the background daemon when this Vault is opened in Obsidian.")
+      .setName(t("settings.daemon.autoStartObsidianName"))
+      .setDesc(t("settings.daemon.autoStartObsidianDesc"))
       .addToggle((toggle) =>
         toggle.setValue(this.client.config.server.autoStartOnObsidianOpen).onChange((val) => {
           this.client.config.server.autoStartOnObsidianOpen = val;
@@ -190,25 +186,33 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("OS Boot Auto-Start")
-      .setDesc(
-        "Register daemon as macOS LaunchAgent / Linux systemd user service to start on system boot.",
-      )
+      .setName(t("settings.daemon.autoStartBootName"))
+      .setDesc(t("settings.daemon.autoStartBootDesc"))
       .addToggle((toggle) =>
         toggle.setValue(this.client.config.server.autoStartOnBoot).onChange(async (val) => {
           if (val) {
-            await this.client.installService();
-            new Notice("Registered OS Boot Auto-Start.");
+            const res = await this.client.installService();
+            if (res.success) {
+              new Notice(t("notices.registeredBootAutoStart"));
+            } else {
+              toggle.setValue(false);
+              new Notice(t("notices.registerBootAutoStartFailed", { error: res.error }));
+            }
           } else {
-            await this.client.uninstallService();
-            new Notice("Unregistered OS Boot Auto-Start.");
+            const res = await this.client.uninstallService();
+            if (res.success) {
+              new Notice(t("notices.unregisteredBootAutoStart"));
+            } else {
+              toggle.setValue(true);
+              new Notice(t("notices.unregisterBootAutoStartFailed", { error: res.error }));
+            }
           }
         }),
       );
 
     new Setting(containerEl)
-      .setName("Server Port")
-      .setDesc("Default HTTP port for daemon and MCP (auto-increments if busy).")
+      .setName(t("settings.daemon.serverPortName"))
+      .setDesc(t("settings.daemon.serverPortDesc"))
       .addText((text) => {
         this.serverPortText = text;
         text.setValue(String(this.client.config.server.port)).onChange((val) => {
@@ -240,7 +244,7 @@ export class LernstoffSettingsTab extends PluginSettingTab {
               if (typeof inputEl.value === "string") {
                 inputEl.value = safeVal;
               }
-              new Notice("⚠️ Invalid Server Port: enter an integer between 1024 and 65535.");
+              new Notice(t("notices.invalidServerPort"));
             }
           });
         }
@@ -252,8 +256,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     });
 
     new Setting(containerEl)
-      .setName("CLI Executable Path")
-      .setDesc("Optional override path to the lernstoff binary executable.")
+      .setName(t("settings.daemon.cliPathName"))
+      .setDesc(t("settings.daemon.cliPathDesc"))
       .addText((text) =>
         text.setValue(this.client.cliPathOverride || "").onChange((val) => {
           this.client.cliPathOverride = val.trim() || undefined;
@@ -263,61 +267,68 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     // =========================================================================
     // Module 2: AI Agent One-Click Integration
     // =========================================================================
-    containerEl.createEl("h3", { text: "2. AI Programming Agent Integration" });
+    containerEl.createEl("h3", { text: t("settings.agents.moduleTitle") });
 
     new Setting(containerEl)
-      .setName("One-Click MCP & SKILL.md Installation")
-      .setDesc(
-        "Inject cognitive selective note-taking protocol (SKILL.md) and MCP config into coding agents.",
-      )
+      .setName(t("settings.agents.oneClickName"))
+      .setDesc(t("settings.agents.oneClickDesc"))
       .addButton((btn) =>
-        btn.setButtonText("Claude Code").onClick(async () => {
-          await this.client.installAgent("claude");
-          new Notice("Injected SKILL.md and MCP to Claude Code config");
+        btn.setButtonText(t("settings.agents.claudeCode")).onClick(async () => {
+          const res = await this.client.installAgent("claude");
+          new Notice(
+            res.success
+              ? t("notices.injectedClaudeCode")
+              : t("notices.injectClaudeCodeFailed", { error: res.error }),
+          );
         }),
       )
       .addButton((btn) =>
-        btn.setButtonText("Cursor").onClick(async () => {
-          await this.client.installAgent("cursor");
-          new Notice("Injected SKILL.md and MCP to Cursor config");
+        btn.setButtonText(t("settings.agents.cursor")).onClick(async () => {
+          const res = await this.client.installAgent("cursor");
+          new Notice(
+            res.success
+              ? t("notices.injectedCursor")
+              : t("notices.injectCursorFailed", { error: res.error }),
+          );
         }),
       )
       .addButton((btn) =>
-        btn.setButtonText("Antigravity").onClick(async () => {
-          await this.client.installAgent("antigravity");
-          new Notice("Injected SKILL.md and MCP to Antigravity config");
+        btn.setButtonText(t("settings.agents.antigravity")).onClick(async () => {
+          const res = await this.client.installAgent("antigravity");
+          new Notice(
+            res.success
+              ? t("notices.injectedAntigravity")
+              : t("notices.injectAntigravityFailed", { error: res.error }),
+          );
         }),
       )
       .addButton((btn) =>
         btn
-          .setButtonText("Copy MCP JSON")
+          .setButtonText(t("settings.agents.copyMcpJson"))
           .setCta()
           .onClick(() => {
             const mcpJson = JSON.stringify(
               {
                 mcpServers: {
-                  lernstoff: {
-                    command: "lernstoff",
-                    args: ["mcp", "--vault", this.client.vaultPath],
-                  },
+                  lernstoff: this.client.getMcpEntry(),
                 },
               },
               null,
               2,
             );
             navigator.clipboard.writeText(mcpJson);
-            new Notice("Copied MCP JSON to clipboard!");
+            new Notice(t("notices.copiedMcpJson"));
           }),
       );
 
     // =========================================================================
     // Module 3: QMD Local Models & Maintenance
     // =========================================================================
-    containerEl.createEl("h3", { text: "3. QMD Models & Storage" });
+    containerEl.createEl("h3", { text: t("settings.qmd.moduleTitle") });
 
     new Setting(containerEl)
-      .setName("Embed Model URI")
-      .setDesc("GGUF model URI for vector embeddings (default: embeddinggemma-300M-Q8_0).")
+      .setName(t("settings.qmd.embedModelName"))
+      .setDesc(t("settings.qmd.embedModelDesc"))
       .addText((text) =>
         text.setValue(this.client.config.models.embed).onChange((val) => {
           this.client.config.models.embed = val;
@@ -326,10 +337,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Rerank Model URI")
-      .setDesc(
-        "Cross-Encoder GGUF URI for Gate 2 & Gate 3 reranking (default: Qwen3-Reranker-0.6B).",
-      )
+      .setName(t("settings.qmd.rerankModelName"))
+      .setDesc(t("settings.qmd.rerankModelDesc"))
       .addText((text) =>
         text.setValue(this.client.config.models.rerank).onChange((val) => {
           this.client.config.models.rerank = val;
@@ -338,8 +347,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Generate Model URI")
-      .setDesc("Local generation model URI for synthesis (optional).")
+      .setName(t("settings.qmd.generateModelName"))
+      .setDesc(t("settings.qmd.generateModelDesc"))
       .addText((text) =>
         text.setValue(this.client.config.models.generate).onChange((val) => {
           this.client.config.models.generate =
@@ -349,8 +358,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("QMD Inactivity Timeout (ms)")
-      .setDesc("Idle time in milliseconds before unloading native llama.cpp model context.")
+      .setName(t("settings.qmd.inactivityTimeoutName"))
+      .setDesc(t("settings.qmd.inactivityTimeoutDesc"))
       .addText((text) =>
         text.setValue(String(this.client.config.models.inactivityTimeoutMs)).onChange((val) => {
           const timeout = parseInt(val, 10);
@@ -362,40 +371,62 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Storage Maintenance & Index Synchronization")
-      .setDesc(
-        "Maintain QMD vector/keyword index, pull models, and clean up decayed scratchpad entries.",
-      )
+      .setName(t("settings.qmd.maintenanceName"))
+      .setDesc(t("settings.qmd.maintenanceDesc"))
       .addButton((btn) =>
-        btn.setButtonText("Update Index").onClick(async () => {
-          new Notice("Updating QMD index...");
-          await this.client.updateIndex();
-          new Notice("✅ QMD index update triggered.");
+        btn.setButtonText(t("settings.qmd.updateIndex")).onClick(async () => {
+          new Notice(t("notices.updatingIndex"));
+          const res = await this.client.updateIndex();
+          if (res.success) {
+            new Notice(t("notices.updateIndexCompleted"));
+          } else {
+            new Notice(t("notices.updateIndexFailed", { error: res.error }));
+          }
         }),
       )
       .addButton((btn) =>
-        btn.setButtonText("Pull Models").onClick(async () => {
-          new Notice("Pulling QMD models...");
-          await this.client.runCli(["doctor", "--pull-models", "--vault", this.client.vaultPath]);
-          new Notice("✅ QMD model verification completed.");
+        btn.setButtonText(t("settings.qmd.pullModels")).onClick(async () => {
+          new Notice(t("notices.pullingModels"));
+          const res = await this.client.runCli([
+            "doctor",
+            "--pull-models",
+            "--vault",
+            this.client.vaultPath,
+          ]);
+          if (res.code === 0) {
+            new Notice(t("notices.pullModelsCompleted"));
+          } else {
+            new Notice(
+              t("notices.pullModelsFailed", {
+                error:
+                  res.stderr.trim() ||
+                  res.stdout.trim() ||
+                  t("settings.qmd.exitCode", { code: res.code }),
+              }),
+            );
+          }
         }),
       )
       .addButton((btn) =>
-        btn.setButtonText("Cleanup Orphans & Decayed").onClick(async () => {
-          new Notice("Cleaning up orphans and expired scratchpad entries...");
-          await this.client.cleanupOrphans();
-          new Notice("✅ Cleanup completed.");
+        btn.setButtonText(t("settings.qmd.cleanupOrphans")).onClick(async () => {
+          new Notice(t("notices.cleaningOrphans"));
+          const res = await this.client.cleanupOrphans();
+          if (res.success) {
+            new Notice(t("notices.cleanupCompleted"));
+          } else {
+            new Notice(t("notices.cleanupFailed", { error: res.error }));
+          }
         }),
       );
 
     // =========================================================================
     // Module 4: Hippocampal Gate & Scratchpad Sliders
     // =========================================================================
-    containerEl.createEl("h3", { text: "4. Cognitive Gate & Memory Thresholds" });
+    containerEl.createEl("h3", { text: t("settings.gates.moduleTitle") });
 
     new Setting(containerEl)
-      .setName(`Gate 2 Inquiry Off-Topic Cutoff (τ_off: ${this.client.config.gate.tauOff})`)
-      .setDesc("Candidates below this cross-encoder score are silently discarded (< 0.35).")
+      .setName(t("settings.gates.gate2TauOffName", { value: this.client.config.gate.tauOff }))
+      .setDesc(t("settings.gates.gate2TauOffDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(0.1, 0.8, 0.05)
@@ -407,8 +438,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Gate 2 Inquiry Core Pass Cutoff (τ_core: ${this.client.config.gate.tauCore})`)
-      .setDesc("Candidates between τ_off and τ_core defer to scratchpad; >= τ_core enter Gate 3.")
+      .setName(t("settings.gates.gate2TauCoreName", { value: this.client.config.gate.tauCore }))
+      .setDesc(t("settings.gates.gate2TauCoreDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(0.4, 0.9, 0.05)
@@ -420,8 +451,10 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Gate 3 Redundant Similarity (S_sem: ${this.client.config.gate.maxSemRedundant})`)
-      .setDesc("Propositions with semantic similarity >= this and low novelty are discarded.")
+      .setName(
+        t("settings.gates.gate3MaxSemName", { value: this.client.config.gate.maxSemRedundant }),
+      )
+      .setDesc(t("settings.gates.gate3MaxSemDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(0.6, 0.95, 0.02)
@@ -433,8 +466,10 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Gate 3 Minimum Lexical Novelty (Δ_lex: ${this.client.config.gate.minLexNovelty})`)
-      .setDesc("Threshold for n-gram lexical novelty before proposition is accepted.")
+      .setName(
+        t("settings.gates.gate3MinLexName", { value: this.client.config.gate.minLexNovelty }),
+      )
+      .setDesc(t("settings.gates.gate3MinLexDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(0.05, 0.6, 0.05)
@@ -446,8 +481,12 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Socratic Min Outbound Links (${this.client.config.socratic.minOutboundLinks})`)
-      .setDesc("Minimum outbound proposition links required for crystallized notes.")
+      .setName(
+        t("settings.gates.socraticMinLinksName", {
+          value: this.client.config.socratic.minOutboundLinks,
+        }),
+      )
+      .setDesc(t("settings.gates.socraticMinLinksDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(1, 5, 1)
@@ -459,8 +498,10 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Scratchpad Retention (TTL Days: ${this.client.config.scratchpad.ttlDays})`)
-      .setDesc("Number of days unreferenced scratchpad entries survive before GC archival.")
+      .setName(
+        t("settings.gates.scratchpadTtlDaysName", { value: this.client.config.scratchpad.ttlDays }),
+      )
+      .setDesc(t("settings.gates.scratchpadTtlDaysDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(3, 60, 1)
@@ -472,8 +513,12 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(`Scratchpad Promotion Hit Count (${this.client.config.scratchpad.promoteHitCount})`)
-      .setDesc("Collision count required across distinct sources to trigger proposition promotion.")
+      .setName(
+        t("settings.gates.scratchpadPromoteHitCountName", {
+          value: this.client.config.scratchpad.promoteHitCount,
+        }),
+      )
+      .setDesc(t("settings.gates.scratchpadPromoteHitCountDesc"))
       .addSlider((slider) =>
         slider
           .setLimits(1, 10, 1)
@@ -485,15 +530,15 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Reset Gate to Factory Defaults")
-      .setDesc("Restore all cognitive gate sliders and thresholds to factory values.")
+      .setName(t("settings.gates.resetName"))
+      .setDesc(t("settings.gates.resetDesc"))
       .addButton((btn) =>
-        btn.setButtonText("Reset to Defaults").onClick(() => {
+        btn.setButtonText(t("settings.gates.resetBtn")).onClick(() => {
           this.client.config.gate = structuredClone(DEFAULT_LERNSTOFF_CONFIG.gate);
           this.client.config.socratic = structuredClone(DEFAULT_LERNSTOFF_CONFIG.socratic);
           this.client.config.scratchpad = structuredClone(DEFAULT_LERNSTOFF_CONFIG.scratchpad);
           this.client.updateConfig(this.client.config);
-          new Notice("Gate thresholds reset to defaults.");
+          new Notice(t("notices.gateResetToDefaults"));
           this.display();
         }),
       );
@@ -501,11 +546,11 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     // =========================================================================
     // Module 5: Vault Folder & File Mapping
     // =========================================================================
-    containerEl.createEl("h3", { text: "5. Vault Folder & File Mapping" });
+    containerEl.createEl("h3", { text: t("settings.paths.moduleTitle") });
 
     new Setting(containerEl)
-      .setName("Inquiries File")
-      .setDesc("Relative path to the curiosity question tree.")
+      .setName(t("settings.paths.inquiriesFileName"))
+      .setDesc(t("settings.paths.inquiriesFileDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.inquiriesFile).onChange((val) => {
           this.client.config.paths.inquiriesFile = val;
@@ -514,8 +559,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Scratchpad File")
-      .setDesc("Relative path to the fast scratchpad buffer.")
+      .setName(t("settings.paths.scratchpadFileName"))
+      .setDesc(t("settings.paths.scratchpadFileDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.scratchpadFile).onChange((val) => {
           this.client.config.paths.scratchpadFile = val;
@@ -524,8 +569,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Concepts Directory")
-      .setDesc("Relative folder for evergreen proposition notes.")
+      .setName(t("settings.paths.conceptsDirName"))
+      .setDesc(t("settings.paths.conceptsDirDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.conceptsDir).onChange((val) => {
           this.client.config.paths.conceptsDir = val;
@@ -534,8 +579,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Wiki Directory")
-      .setDesc("Relative root folder for all synthesized wiki content.")
+      .setName(t("settings.paths.wikiDirName"))
+      .setDesc(t("settings.paths.wikiDirDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.wikiDir).onChange((val) => {
           this.client.config.paths.wikiDir = val;
@@ -544,8 +589,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Index File")
-      .setDesc("Relative path to global constellation index.")
+      .setName(t("settings.paths.indexFileName"))
+      .setDesc(t("settings.paths.indexFileDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.indexFile).onChange((val) => {
           this.client.config.paths.indexFile = val;
@@ -554,8 +599,8 @@ export class LernstoffSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Log File")
-      .setDesc("Relative path to cognitive event and gate audit log.")
+      .setName(t("settings.paths.logFileName"))
+      .setDesc(t("settings.paths.logFileDesc"))
       .addText((text) =>
         text.setValue(this.client.config.paths.logFile).onChange((val) => {
           this.client.config.paths.logFile = val;
@@ -568,29 +613,29 @@ export class LernstoffSettingsTab extends PluginSettingTab {
     // =========================================================================
     const logPath = join(this.client.vaultPath, LERNSTOFF_DIR, "daemon.log");
     if (existsSync(logPath)) {
-      containerEl.createEl("h3", { text: "Recent Daemon Logs" });
+      containerEl.createEl("h3", { text: t("settings.logs.moduleTitle") });
 
       new Setting(containerEl)
-        .setName("Clear Daemon Logs")
-        .setDesc("Truncate .lernstoff/daemon.log file.")
+        .setName(t("settings.logs.clearName"))
+        .setDesc(t("settings.logs.clearDesc"))
         .addButton((btn) =>
           btn
-            .setButtonText("Clear Logs")
+            .setButtonText(t("settings.logs.clearBtn"))
             .setWarning()
             .onClick(() => {
               try {
                 writeFileSync(logPath, "", "utf-8");
-                new Notice("Cleared daemon.log");
+                new Notice(t("notices.clearedLog"));
                 this.display();
               } catch (e: any) {
-                new Notice(`Failed to clear log: ${e.message}`);
+                new Notice(t("notices.failedToClearLog", { error: e.message }));
               }
             }),
         );
 
       const logContent = readFileSync(logPath, "utf-8").split("\n").slice(-25).join("\n");
       const pre = containerEl.createEl("pre", { cls: "lernstoff-log-viewer" });
-      pre.setText(logContent || "(Log file is empty)");
+      pre.setText(logContent || t("settings.logs.empty"));
     }
   }
 }

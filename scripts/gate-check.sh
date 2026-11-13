@@ -15,6 +15,7 @@ fi
 echo "[Gate 2/4] Typecheck & Lint..."
 if [ -f package.json ]; then
   pnpm check
+  pnpm i18n:check
 fi
 
 echo "[Gate 3/4] Deterministic Test Suite..."

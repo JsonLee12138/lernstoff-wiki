@@ -9,6 +9,73 @@ import { VaultOps } from "./vault-ops.js";
 import { VaultWatcher } from "./vault-watcher.js";
 import { personalizedPageRank } from "./algorithms/monte-carlo-ppr.js";
 import { buildWikilinkGraph } from "./algorithms/wikilink-graph.js";
+import { installLernstoffRule, removeLernstoffRule } from "./rule-installer.js";
+
+export const LERNSTOFF_MCP_INSTRUCTIONS = `Lernstoff Wiki MCP Server: Algorithmic & cognitive kernel for selective note-taking and knowledge graph synthesis.
+
+Key Directives:
+1. Search Repository Memory First: Always query repository memory via \`lernstoff_search_memory\` before researching unfamiliar code or tackling recurring issues.
+2. Cognitive Gatekeeping: Never bypass the hippocampal gate (\`lernstoff_probe_delta\`) to directly write or edit \`wiki/\` notes or \`inbox/scratchpad.md\`.
+3. Socratic Crystallization: When novel claims survive the gate, use \`lernstoff_crystallize_note\` with falsifiable proposition titles and >= 2 outbound typed links.
+4. Maintenance: Use \`lernstoff_consolidate_scratchpad\` to inspect and promote colliding claims, and \`lernstoff_lint_wiki\` to audit graph health.
+5. Best Practices: Consult the static resource \`lernstoff://guide/best-practices\` for proposition design and Socratic defense rules.`;
+
+export const LERNSTOFF_BEST_PRACTICES_GUIDE = `# Lernstoff Best Practices & Socratic Defense Protocol
+
+This guide establishes the cognitive hygiene standards for evergreen note crystallization, proposition design, and knowledge evolution within Obsidian.
+
+---
+
+## 1. Proposition-as-Title Standard
+
+Every note title in \`wiki/concepts/\` must be a falsifiable proposition claim (Subject + Predicate + Object/Condition). Never name notes after bare topics, tools, or nouns.
+
+### Good vs. Bad Title Examples
+
+| Anti-Pattern (Bare Nouns / Topics) | Recommended Proposition Title | Why It Matters |
+| :--- | :--- | :--- |
+| ❌ \`PostgreSQL MVCC\` | ✅ \`PostgreSQL MVCC Eliminates Read Locks Under Snapshot Isolation\` | Declares the exact operational invariant and trade-off. |
+| ❌ \`Raft Consensus\` | ✅ \`Raft Leader Leases Prevent Split-Brain Reads Without Quorum Rounds\` | Identifies the mechanism and the failure mode it addresses. |
+| ❌ \`Rust Error Handling\` | ✅ \`Rust Result Type Replaces Runtime Exceptions With Explicit Control Flow\` | Falsifiable design choice comparing two architectures. |
+| ❌ \`Redis Persistence\` | ✅ \`Redis Append-Only File Fsync Trades Write Latency for Durability Bounds\` | Clarifies the engineering compromise instead of generic product documentation. |
+| ❌ \`React Server Components\` | ✅ \`React Server Components Eliminate Client Bundle Overhead for Static Subtrees\` | Explains what changes in runtime performance and why. |
+
+---
+
+## 2. Socratic Defense Protocol (Q1, Q2, Q3)
+
+When \`lernstoff_probe_delta\` escalates a surviving claim, the agent must formulate a rigorous Socratic defense before calling \`lernstoff_crystallize_note\`.
+
+### Q1: Irreplaceable Knowledge Delta
+- What exact epistemic delta does this note add compared to existing vault notes?
+- Must explain the exact mechanism, bounds, or invariant rather than generic summaries.
+
+### Q2: Belief Revision & Qualification
+- Which prior assumption, mental model, or rule is revised, challenged, or qualified?
+- Must explicitly state how prior beliefs are updated or bounded.
+
+### Q3: Typed Link Relations (>= 2)
+- Must establish >= 2 outbound typed links with predicates:
+  * \`supports\`: Strengthens or provides empirical evidence for an existing claim.
+  * \`contradicts\`: Exposes tension, trade-offs, or opposing results.
+  * \`extends\`: Broadens a mechanism into a new domain or architecture.
+  * \`qualifies\`: Restricts an existing claim to specific operational bounds.
+
+---
+
+## 3. Scratchpad Promotion & Cluster Synthesis Flow
+
+1. **Scratchpad Buffer**:
+   - Borderline claims or single mentions are deferred to \`inbox/scratchpad.md\`.
+   - Inspect buffer with \`lernstoff_consolidate_scratchpad(action: "inspect")\`.
+   - Multi-source collision (hit count >= 2 across >= 2 independent sources) triggers \`READY_FOR_PROMOTION\`.
+   - Promote to full proposition note with Socratic defense, then mark promoted with \`lernstoff_consolidate_scratchpad(action: "promote", itemIds: [...])\`.
+
+2. **Cluster Synthesis (\`SYNTHESIZE_CLUSTER\`)**:
+   - Inquiries in \`wiki/inquiries.md\` track open architectural unknowns.
+   - When \`lernstoff_lint_wiki\` reports an inquiry has >= 5 supporting proposition notes, synthesize into a higher-order principle.
+   - Close inquiry via \`lernstoff_manage_inquiries(action: "close", id: "#q-xx", resolutionNote: "<cluster-slug>")\`.
+`;
 
 export interface CreateLernstoffMcpServerOptions {
   vaultPath: string;
@@ -37,10 +104,15 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
   const vaultOps = options.vaultOps || new VaultOps(vaultPath, qmdBridge, watcher, config);
   const pipeline = options.pipeline || new HippocampalPipeline(vaultPath, qmdBridge, config);
 
-  const server = new McpServer({
-    name: "lernstoff-wiki",
-    version: config.version,
-  });
+  const server = new McpServer(
+    {
+      name: "lernstoff-wiki",
+      version: config.version,
+    },
+    {
+      instructions: LERNSTOFF_MCP_INSTRUCTIONS,
+    },
+  );
 
   // ===========================================================================
   // 1. lernstoff_probe_delta (Stage 1-3 Hippocampal Gate)
@@ -553,6 +625,102 @@ export function createLernstoffMcpServer(options: CreateLernstoffMcpServerOption
         ],
       };
     },
+  );
+
+  // ===========================================================================
+  // 9. lernstoff_install_rule (Idempotent Rule Installer)
+  // ===========================================================================
+  server.registerTool(
+    "lernstoff_install_rule",
+    {
+      description:
+        "Installs or removes Lernstoff Wiki memory routing rules into project AGENTS.md (with optional CLAUDE.md sync) or global agent rule targets.",
+      inputSchema: {
+        action: z.enum(["install", "remove"]).describe("Action to perform"),
+        global: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Whether to install/remove rules globally (user scope) instead of project scope",
+          ),
+        target: z
+          .enum(["all", "codex", "claude", "antigravity", "workbuddy"])
+          .default("all")
+          .describe("Target agent environment for global rule installation"),
+        projectPath: z
+          .string()
+          .optional()
+          .describe(
+            "Project directory for project-level installation (defaults to vault directory or cwd)",
+          ),
+        homeDir: z
+          .string()
+          .optional()
+          .describe("User home directory override (for testing or isolated environments)"),
+        syncClaude: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Whether to append @AGENTS.md to project CLAUDE.md if present and not yet referencing AGENTS.md",
+          ),
+      },
+    },
+    async (args) => {
+      try {
+        if (args.action === "install") {
+          const res = installLernstoffRule({
+            global: args.global,
+            target: args.target,
+            projectPath: args.projectPath || vaultPath,
+            homeDir: args.homeDir,
+            syncClaude: args.syncClaude,
+          });
+          const summary = `Installed Lernstoff rule. Updated files: [${res.updatedFiles.join(", ")}]. Synced CLAUDE.md files: [${res.syncedClaudeFiles.join(", ")}].`;
+          return {
+            content: [{ type: "text", text: summary }],
+          };
+        } else {
+          const res = removeLernstoffRule({
+            global: args.global,
+            target: args.target,
+            projectPath: args.projectPath || vaultPath,
+            homeDir: args.homeDir,
+          });
+          const summary = `Removed Lernstoff rule. Cleaned files: [${res.updatedFiles.join(", ")}].`;
+          return {
+            content: [{ type: "text", text: summary }],
+          };
+        }
+      } catch (err: any) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `lernstoff_install_rule error: ${err.message}` }],
+        };
+      }
+    },
+  );
+
+  // ===========================================================================
+  // MCP Resource: lernstoff://guide/best-practices
+  // ===========================================================================
+  server.registerResource(
+    "lernstoff-guide-best-practices",
+    "lernstoff://guide/best-practices",
+    {
+      title: "Lernstoff Best Practices & Socratic Defense Protocol",
+      description:
+        "Cognitive hygiene standards for evergreen note crystallization, proposition design, and knowledge evolution",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          text: LERNSTOFF_BEST_PRACTICES_GUIDE,
+          mimeType: "text/markdown",
+        },
+      ],
+    }),
   );
 
   // ===========================================================================

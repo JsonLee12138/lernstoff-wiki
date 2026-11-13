@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parseScratchpad, formatScratchpad } from "@lernstoff/core/scratchpad";
 import { DaemonClient } from "./daemon-client.js";
 import { LernstoffSettingsTab } from "./settings-tab.js";
+import { t } from "./i18n.js";
 
 export default class LernstoffPlugin extends Plugin {
   public client!: DaemonClient;
@@ -34,7 +35,7 @@ export default class LernstoffPlugin extends Plugin {
     // 3. Register 7 Native Command Palette Commands
     this.addCommand({
       id: "open-inquiry-tree",
-      name: "Open Inquiry Tree (打开好奇心问题树)",
+      name: t("commands.openInquiryTree"),
       callback: async () => {
         let file = this.app.vault.getAbstractFileByPath(this.client.config.paths.inquiriesFile);
         if (!file) {
@@ -44,14 +45,16 @@ export default class LernstoffPlugin extends Plugin {
         if (file) {
           await this.app.workspace.getLeaf().openFile(file as any);
         } else {
-          new Notice(`Inquiries file not found at ${this.client.config.paths.inquiriesFile}`);
+          new Notice(
+            t("notices.inquiriesFileNotFound", { path: this.client.config.paths.inquiriesFile }),
+          );
         }
       },
     });
 
     this.addCommand({
       id: "open-scratchpad",
-      name: "Open Scratchpad (打开闪念缓冲池)",
+      name: t("commands.openScratchpad"),
       callback: async () => {
         let file = this.app.vault.getAbstractFileByPath(this.client.config.paths.scratchpadFile);
         if (!file) {
@@ -61,18 +64,20 @@ export default class LernstoffPlugin extends Plugin {
         if (file) {
           await this.app.workspace.getLeaf().openFile(file as any);
         } else {
-          new Notice(`Scratchpad file not found at ${this.client.config.paths.scratchpadFile}`);
+          new Notice(
+            t("notices.scratchpadFileNotFound", { path: this.client.config.paths.scratchpadFile }),
+          );
         }
       },
     });
 
     this.addCommand({
       id: "add-selection-to-inquiries",
-      name: "Add Selection to Inquiry Tree (将选中文本添加为焦点问题)",
+      name: t("commands.addSelectionToInquiries"),
       editorCallback: async (editor: Editor) => {
         const selected = editor.getSelection().trim();
         if (!selected) {
-          new Notice("Please select text in the editor first.");
+          new Notice(t("notices.selectTextFirst"));
           return;
         }
         try {
@@ -82,21 +87,21 @@ export default class LernstoffPlugin extends Plugin {
             body: JSON.stringify({ action: "add", question: selected }),
           });
           if (res.ok) {
-            new Notice(`Added to Inquiry Tree: "${selected.slice(0, 30)}..."`);
+            new Notice(t("notices.addedToInquiries", { text: selected.slice(0, 30) }));
           }
         } catch {
-          new Notice("Failed to contact Lernstoff Daemon.");
+          new Notice(t("notices.daemonContactFailed"));
         }
       },
     });
 
     this.addCommand({
       id: "defer-selection-to-scratchpad",
-      name: "Defer Selection to Scratchpad (将选中文本记入闪念缓冲池)",
+      name: t("commands.deferSelectionToScratchpad"),
       editorCallback: async (editor: Editor) => {
         const selected = editor.getSelection().trim();
         if (!selected) {
-          new Notice("Please select text in the editor first.");
+          new Notice(t("notices.selectTextFirst"));
           return;
         }
         let handled = false;
@@ -107,7 +112,7 @@ export default class LernstoffPlugin extends Plugin {
             body: JSON.stringify({ action: "add", text: selected }),
           });
           if (res.ok) {
-            new Notice(`Deferred to Scratchpad: "${selected.slice(0, 30)}..."`);
+            new Notice(t("notices.deferredToScratchpad", { text: selected.slice(0, 30) }));
             handled = true;
           }
         } catch {}
@@ -131,10 +136,10 @@ export default class LernstoffPlugin extends Plugin {
                 status: "DEFERRED",
               });
               writeFileSync(scratchpadPath, formatScratchpad(entries), "utf-8");
-              new Notice(`Deferred to Scratchpad (local): "${selected.slice(0, 30)}..."`);
+              new Notice(t("notices.deferredToScratchpadLocal", { text: selected.slice(0, 30) }));
             }
           } catch (e: any) {
-            new Notice(`Failed to defer to scratchpad: ${e.message}`);
+            new Notice(t("notices.failedToDefer", { error: e.message }));
           }
         }
       },
@@ -142,7 +147,7 @@ export default class LernstoffPlugin extends Plugin {
 
     this.addCommand({
       id: "run-socratic-lint",
-      name: "Run Socratic Wiki Lint (运行苏格拉底健康度巡检)",
+      name: t("commands.runSocraticLint"),
       callback: async () => {
         try {
           const res = await fetch(`http://127.0.0.1:${this.client.port}/api/lint`, {
@@ -151,18 +156,22 @@ export default class LernstoffPlugin extends Plugin {
           if (res.ok) {
             const data = await res.json();
             new Notice(
-              `🏛️ Lint: ${data.summary.totalNotes} notes, ${data.summary.orphanCount} orphans, ${data.summary.synthesisReadyCount} ready for synthesis.`,
+              t("notices.lintResult", {
+                notes: data.summary.totalNotes,
+                orphans: data.summary.orphanCount,
+                ready: data.summary.synthesisReadyCount,
+              }),
             );
           }
         } catch {
-          new Notice("Failed to run lint: Daemon offline.");
+          new Notice(t("notices.lintFailedOffline"));
         }
       },
     });
 
     this.addCommand({
       id: "consolidate-scratchpad",
-      name: "Consolidate & GC Scratchpad (执行闪念池整合与过期清理)",
+      name: t("commands.consolidateScratchpad"),
       callback: async () => {
         try {
           const res = await fetch(`http://127.0.0.1:${this.client.port}/api/scratchpad`, {
@@ -173,63 +182,62 @@ export default class LernstoffPlugin extends Plugin {
           if (res.ok) {
             const data = await res.json();
             new Notice(
-              `⚡ Scratchpad GC: pruned ${data.decayedArchivedCount || 0} expired items. ${data.promotions?.length || 0} ready for promotion.`,
+              t("notices.scratchpadGcResult", {
+                pruned: data.decayedArchivedCount || 0,
+                ready: data.promotions?.length || 0,
+              }),
             );
           }
         } catch {
-          new Notice("Failed to consolidate scratchpad: Daemon offline.");
+          new Notice(t("notices.scratchpadGcFailedOffline"));
         }
       },
     });
 
     this.addCommand({
       id: "restart-daemon",
-      name: "Restart Background Daemon (重启后台认知引擎)",
+      name: t("commands.restartDaemon"),
       callback: async () => {
-        new Notice("Restarting Lernstoff Daemon...");
+        new Notice(t("notices.daemonRestarting"));
         const ok = await this.client.restartDaemon();
         if (ok) {
           if (this.client.lastPortFallback) {
             const { requestedPort, actualPort } = this.client.lastPortFallback;
-            new Notice(
-              `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
-            );
+            new Notice(t("notices.daemonPortOccupiedSwitched", { requestedPort, actualPort }));
           } else {
-            new Notice("🟢 Lernstoff Daemon online.");
+            new Notice(t("notices.daemonOnline"));
           }
         } else {
-          new Notice("❌ Failed to restart Daemon.");
+          new Notice(t("notices.daemonRestartFailed"));
         }
       },
     });
 
     this.addCommand({
       id: "start-daemon",
-      name: "Start Background Daemon (启动后台认知引擎)",
+      name: t("commands.startDaemon"),
       callback: async () => {
-        new Notice("Starting Lernstoff Daemon...");
+        new Notice(t("notices.daemonStarting"));
         const ok = await this.client.startDaemon();
         if (ok) {
           if (this.client.lastPortFallback) {
             const { requestedPort, actualPort } = this.client.lastPortFallback;
-            new Notice(
-              `⚠️ Port ${requestedPort} was occupied; switched to ${actualPort} and updated config.`,
-            );
+            new Notice(t("notices.daemonPortOccupiedSwitched", { requestedPort, actualPort }));
           } else {
-            new Notice("🟢 Lernstoff Daemon online.");
+            new Notice(t("notices.daemonOnline"));
           }
         } else {
-          new Notice("❌ Failed to start Daemon. Check .lernstoff/daemon.log");
+          new Notice(t("notices.daemonStartFailedWithLog"));
         }
       },
     });
 
     this.addCommand({
       id: "stop-daemon",
-      name: "Stop Background Daemon (停止后台认知引擎)",
+      name: t("commands.stopDaemon"),
       callback: async () => {
         const ok = await this.client.stopDaemon();
-        new Notice(ok ? "🛑 Stopped Lernstoff Daemon." : "❌ Failed to stop Lernstoff Daemon.");
+        new Notice(ok ? t("notices.daemonStopped") : t("notices.daemonStopFailed"));
       },
     });
 
@@ -249,25 +257,38 @@ export default class LernstoffPlugin extends Plugin {
     const m = this.client.metrics;
 
     if (!isRunning) {
-      this.statusBarEl.setText("🧠 Lernstoff: ⚪ Offline");
-      this.statusBarEl.title = "Lernstoff daemon is offline. Click to open settings.";
+      this.statusBarEl.setText(t("statusBar.offline"));
+      this.statusBarEl.title = t("statusBar.offlineTooltip");
       return;
     }
 
-    const inq = m ? `${m.openInquiries} Inquiries` : "Active";
+    const inq = m
+      ? t("statusBar.inquiriesCount", { count: m.openInquiries })
+      : t("statusBar.inquiriesActive");
     const scratch = m
-      ? `${m.scratchpadTotal} Scratchpad (${m.scratchpadPromotionsReady} Ready)`
-      : "0 Scratchpad (0 Ready)";
+      ? t("statusBar.scratchpadStatus", {
+          total: m.scratchpadTotal,
+          ready: m.scratchpadPromotionsReady,
+        })
+      : t("statusBar.scratchpadStatus", { total: 0, ready: 0 });
     const ratio = m && typeof m.noiseFilteredRatio === "number" ? m.noiseFilteredRatio : 0;
-    const noiseFilteredText = `${Math.round(ratio * 100)}% filtered`;
+    const noiseFilteredText = t("statusBar.noiseFiltered", { percent: Math.round(ratio * 100) });
     const pendingHint =
       this.client.config.server.port !== this.client.port
-        ? ` | ⚠️ Restart -> :${this.client.config.server.port}`
+        ? t("statusBar.pendingRestartHint", { port: this.client.config.server.port })
         : "";
 
     this.statusBarEl.setText(
-      `🧠 Lernstoff: ${inq} | ${scratch} | ${noiseFilteredText} | 🟢${pendingHint}`,
+      t("statusBar.runningText", {
+        inquiries: inq,
+        scratchpad: scratch,
+        noiseFiltered: noiseFilteredText,
+        pendingHint,
+      }),
     );
-    this.statusBarEl.title = `Running on port ${this.client.port}${pendingHint}. Click to open settings.`;
+    this.statusBarEl.title = t("statusBar.runningTooltip", {
+      port: this.client.port,
+      pendingHint,
+    });
   }
 }

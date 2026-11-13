@@ -50,9 +50,9 @@ describe("8-Tool MCP Superset & lernstoff:// Resource", () => {
     }
   });
 
-  it("registers the complete 8-tool MCP superset and lernstoff:// resource template", () => {
+  it("registers the complete 9-tool MCP superset, resource template, and best-practices resource", () => {
     const registeredTools = Object.keys(server._registeredTools);
-    expect(registeredTools).toHaveLength(8);
+    expect(registeredTools).toHaveLength(9);
     expect(registeredTools).toContain("lernstoff_probe_delta");
     expect(registeredTools).toContain("lernstoff_crystallize_note");
     expect(registeredTools).toContain("lernstoff_manage_inquiries");
@@ -61,8 +61,65 @@ describe("8-Tool MCP Superset & lernstoff:// Resource", () => {
     expect(registeredTools).toContain("lernstoff_search_memory");
     expect(registeredTools).toContain("lernstoff_get_note");
     expect(registeredTools).toContain("lernstoff_status");
+    expect(registeredTools).toContain("lernstoff_install_rule");
 
     expect(server._registeredResourceTemplates["lernstoff-note"]).toBeDefined();
+    expect(server._registeredResources["lernstoff://guide/best-practices"]).toBeDefined();
+  });
+
+  it("reads static lernstoff://guide/best-practices resource", async () => {
+    const res = server._registeredResources["lernstoff://guide/best-practices"];
+    expect(res).toBeDefined();
+    const uri = new URL("lernstoff://guide/best-practices");
+    const result = await res.readCallback(uri);
+    expect(result.contents).toHaveLength(1);
+    expect(result.contents[0]?.text).toContain("Lernstoff Best Practices");
+    expect(result.contents[0]?.text).toContain("Socratic Defense");
+    expect(result.contents[0]?.mimeType).toBe("text/markdown");
+  });
+
+  it("executes lernstoff_install_rule to install and remove project rule", async () => {
+    const handler = server._registeredTools["lernstoff_install_rule"].handler;
+
+    // 1. Install to project
+    const installRes = await handler({
+      action: "install",
+      global: false,
+      projectPath: tempDir,
+    });
+    expect(installRes.content[0]?.text).toContain("Installed Lernstoff rule");
+    const agentsPath = join(tempDir, "AGENTS.md");
+    expect(existsSync(agentsPath)).toBe(true);
+
+    // 2. Remove from project
+    const removeRes = await handler({
+      action: "remove",
+      global: false,
+      projectPath: tempDir,
+    });
+    expect(removeRes.content[0]?.text).toContain("Removed Lernstoff rule");
+  });
+
+  it("executes lernstoff_install_rule to install to global target with mock homeDir", async () => {
+    const handler = server._registeredTools["lernstoff_install_rule"].handler;
+    const mockHome = mkdtempSync(join(tmpdir(), "lernstoff-mcp-home-"));
+
+    try {
+      const res = await handler({
+        action: "install",
+        global: true,
+        target: "antigravity",
+        homeDir: mockHome,
+      });
+
+      expect(res.content[0]?.text).toContain("Installed Lernstoff rule");
+      const geminiPath = join(mockHome, ".gemini", "GEMINI.md");
+      expect(existsSync(geminiPath)).toBe(true);
+    } finally {
+      if (existsSync(mockHome)) {
+        rmSync(mockHome, { recursive: true, force: true });
+      }
+    }
   });
 
   it("executes lernstoff_status returning system metrics and configuration", async () => {

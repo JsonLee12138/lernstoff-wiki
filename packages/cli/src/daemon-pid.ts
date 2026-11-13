@@ -140,3 +140,160 @@ export function killDaemonProcess(pid: number, timeoutMs = 3000): boolean {
 
   return !isPidAlive(pid);
 }
+
+export interface DiscoveredDaemon {
+  pid: number;
+  vaultPath: string;
+  port?: number;
+  requestedPort?: number;
+  uptime?: number;
+  isOrphanedVault: boolean;
+  status: "running" | "unhealthy" | "orphaned";
+}
+
+/**
+ * Scan the OS process table for all running Lernstoff daemons across any Vault.
+ * Zero global file state: 100% derived from live process inspection and local vault health checks.
+ */
+export async function listAllRunningDaemons(): Promise<DiscoveredDaemon[]> {
+  const discovered: DiscoveredDaemon[] = [];
+  const seenPids = new Set<number>();
+
+  let psOutput = "";
+  try {
+    if (process.platform === "win32") {
+      psOutput = execSync(
+        `wmic process where "name like '%node%' or name like '%lernstoff%'" get ProcessId,CommandLine /format:csv`,
+        { stdio: ["ignore", "pipe", "ignore"], timeout: 3000 },
+      ).toString("utf-8");
+    } else {
+      psOutput = execSync("ps -ax -o pid=,command=", {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3000,
+      }).toString("utf-8");
+    }
+  } catch {
+    return [];
+  }
+
+  const lines = psOutput.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.trim() || !looksLikeLernstoffDaemon(line)) continue;
+    // Check if process is running a server command
+    if (!line.includes("server") || (!line.includes("start") && !line.includes("daemon-server"))) {
+      continue;
+    }
+
+    let pid: number | null = null;
+    if (process.platform === "win32") {
+      const parts = line.split(",");
+      const pidStr = parts[parts.length - 1]?.trim();
+      if (pidStr && /^\d+$/.test(pidStr)) pid = parseInt(pidStr, 10);
+    } else {
+      const m = line.trim().match(/^(\d+)\s+/);
+      if (m && m[1]) pid = parseInt(m[1], 10);
+    }
+
+    if (!pid || pid === process.pid || seenPids.has(pid)) continue;
+    if (!isPidAlive(pid)) continue;
+    seenPids.add(pid);
+
+    // Extract vault path: e.g. --vault /path/to/vault or --vault="/path/to/vault"
+    const vaultMatch = line.match(/--vault(?:=|\s+)("([^"]+)"|'([^']+)'|([^\s]+))/);
+    let vaultPath = "";
+    if (vaultMatch) {
+      vaultPath = resolve(vaultMatch[2] || vaultMatch[3] || vaultMatch[4] || "");
+    }
+    if (!vaultPath) continue;
+
+    const isOrphanedVault = !existsSync(vaultPath);
+
+    // Try reading local daemon.port
+    let port: number | undefined;
+    const portFile = join(vaultPath, LERNSTOFF_DIR, "daemon.port");
+    if (existsSync(portFile)) {
+      try {
+        const parsed = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
+        if (Number.isInteger(parsed) && parsed > 0) port = parsed;
+      } catch {}
+    }
+
+    // Also check if --port <port> was explicitly passed in cmdline
+    if (!port) {
+      const portMatch = line.match(/--port(?:=|\s+)(\d+)/);
+      if (portMatch && portMatch[1]) {
+        port = parseInt(portMatch[1], 10);
+      }
+    }
+
+    let status: DiscoveredDaemon["status"] = isOrphanedVault ? "orphaned" : "running";
+    let uptime: number | undefined;
+    let requestedPort: number | undefined;
+
+    if (port) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`, {
+          signal: AbortSignal.timeout(400),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          if (data && data.status === "ok") {
+            uptime = data.uptime;
+            requestedPort = data.requestedPort;
+            if (data.vault && resolve(String(data.vault)) !== vaultPath) {
+              // Port collision with a different vault
+              status = "unhealthy";
+            }
+          }
+        } else {
+          if (!isOrphanedVault) status = "unhealthy";
+        }
+      } catch {
+        if (!isOrphanedVault) status = "unhealthy";
+      }
+    }
+
+    discovered.push({
+      pid,
+      vaultPath,
+      port,
+      requestedPort,
+      uptime,
+      isOrphanedVault,
+      status,
+    });
+  }
+
+  return discovered;
+}
+
+/**
+ * Stop all running Lernstoff daemons found across the system.
+ */
+export async function stopAllRunningDaemons(): Promise<{ stopped: number; errors: string[] }> {
+  const daemons = await listAllRunningDaemons();
+  let stopped = 0;
+  const errors: string[] = [];
+
+  for (const d of daemons) {
+    const ok = killDaemonProcess(d.pid);
+    if (ok) {
+      stopped++;
+      // Clean up PID/port files if vault directory exists
+      if (d.vaultPath && existsSync(d.vaultPath)) {
+        try {
+          const pidFile = join(d.vaultPath, LERNSTOFF_DIR, "daemon.pid");
+          if (existsSync(pidFile)) unlinkSync(pidFile);
+        } catch {}
+        try {
+          const portFile = join(d.vaultPath, LERNSTOFF_DIR, "daemon.port");
+          if (existsSync(portFile)) unlinkSync(portFile);
+        } catch {}
+      }
+    } else {
+      errors.push(`Failed to stop process PID ${d.pid} (${d.vaultPath})`);
+    }
+  }
+
+  return { stopped, errors };
+}

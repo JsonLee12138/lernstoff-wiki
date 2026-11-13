@@ -15,7 +15,7 @@ import { execFile, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { initVault } from "@lernstoff/core/vault-init";
 import { loadConfig } from "@lernstoff/core/config";
-import { isPidAlive, getRunningDaemonInfo } from "../src/daemon-pid.js";
+import { isPidAlive, getRunningDaemonInfo, listAllRunningDaemons } from "../src/daemon-pid.js";
 import { ServiceManager } from "../src/service-manager.js";
 import { AgentInstaller } from "../src/agent-installer.js";
 import {
@@ -226,8 +226,34 @@ describe("CLI Components (Daemon PID, Service Manager, Agent Installer, Cognitiv
     expect(existsSync(mcpPath)).toBe(true);
     const mcpJson = JSON.parse(readFileSync(mcpPath, "utf-8"));
     expect(mcpJson.mcpServers.lernstoff).toBeDefined();
-    expect(mcpJson.mcpServers.lernstoff.command).toBe("lernstoff");
+    expect(mcpJson.mcpServers.lernstoff.command).toMatch(/lernstoff(\.cmd)?$/);
     expect(mcpJson.mcpServers.lernstoff.args).toContain(tempDir);
+
+    // 3. Install Antigravity MCP configuration into ~/.gemini/config/mcp_config.json
+    const prevHome = process.env.HOME;
+    const fakeHome = mkdtempSync(join(tmpdir(), "lernstoff-agy-home-"));
+    try {
+      process.env.HOME = fakeHome;
+      const agyDir = join(fakeHome, ".gemini/config");
+      mkdirSync(agyDir, { recursive: true });
+      const agyMcpPath = join(agyDir, "mcp_config.json");
+      writeFileSync(
+        agyMcpPath,
+        JSON.stringify({ mcpServers: { existing: { command: "other" } } }, null, 2),
+        "utf-8",
+      );
+
+      const agyFiles = AgentInstaller.installMcp("antigravity", tempDir);
+      expect(agyFiles).toContain(agyMcpPath);
+      const agyJson = JSON.parse(readFileSync(agyMcpPath, "utf-8"));
+      expect(agyJson.mcpServers.existing).toEqual({ command: "other" });
+      expect(agyJson.mcpServers.lernstoff).toBeDefined();
+      expect(agyJson.mcpServers.lernstoff.command).toMatch(/lernstoff(\.cmd)?$/);
+      expect(agyJson.mcpServers.lernstoff.args).toContain(tempDir);
+    } finally {
+      process.env.HOME = prevHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it("runs Doctor inspection reporting environment health", async () => {
@@ -439,5 +465,137 @@ describe("CLI Components (Daemon PID, Service Manager, Agent Installer, Cognitiv
 
     // Clean up
     await runCliBin(["server", "stop", "--vault", tempDir]);
+  });
+
+  it("lists active daemons across vaults and supports --json format (server list)", async () => {
+    const portA = await allocateFreePort();
+    const vaultB = mkdtempSync(join(tmpdir(), "lernstoff-vault-b-"));
+    await initVault(vaultB);
+    const portB = await allocateFreePort();
+
+    try {
+      // Start daemon for vault A
+      const startA = await runCliBin([
+        "server",
+        "start",
+        "--daemon",
+        "--port",
+        String(portA),
+        "--vault",
+        tempDir,
+      ]);
+      expect(startA.code).toBe(0);
+
+      // Start daemon for vault B
+      const startB = await runCliBin([
+        "server",
+        "start",
+        "--daemon",
+        "--port",
+        String(portB),
+        "--vault",
+        vaultB,
+      ]);
+      expect(startB.code).toBe(0);
+
+      // 1. Programmatic listAllRunningDaemons()
+      const daemons = await listAllRunningDaemons();
+      expect(daemons.length).toBeGreaterThanOrEqual(2);
+      const foundA = daemons.find((d) => d.vaultPath === resolve(tempDir));
+      const foundB = daemons.find((d) => d.vaultPath === resolve(vaultB));
+      expect(foundA).toBeDefined();
+      expect(foundB).toBeDefined();
+      expect(foundA!.port).toBe(portA);
+      expect(foundB!.port).toBe(portB);
+
+      // 2. CLI `server list` table output
+      const listRes = await runCliBin(["server", "list"]);
+      expect(listRes.code).toBe(0);
+      expect(listRes.stdout).toContain(String(portA));
+      expect(listRes.stdout).toContain(String(portB));
+      expect(listRes.stdout).toContain("PID");
+      expect(listRes.stdout).toContain("VAULT");
+
+      // 3. CLI `server list --json` structured output
+      const jsonRes = await runCliBin(["server", "list", "--json"]);
+      expect(jsonRes.code).toBe(0);
+      const parsedJson = JSON.parse(jsonRes.stdout);
+      expect(Array.isArray(parsedJson)).toBe(true);
+      expect(parsedJson.some((d: any) => d.vaultPath === resolve(tempDir))).toBe(true);
+      expect(parsedJson.some((d: any) => d.vaultPath === resolve(vaultB))).toBe(true);
+
+      // 4. `server stop --all` terminates all running daemons
+      const stopAllRes = await runCliBin(["server", "stop", "--all"]);
+      expect(stopAllRes.code).toBe(0);
+      expect(stopAllRes.stdout).toContain("Stopped");
+
+      expect(getRunningDaemonInfo(tempDir)).toBeNull();
+      expect(getRunningDaemonInfo(vaultB)).toBeNull();
+    } finally {
+      await runCliBin(["server", "stop", "--vault", tempDir]);
+      await runCliBin(["server", "stop", "--vault", vaultB]);
+      rmSync(vaultB, { recursive: true, force: true });
+    }
+  });
+
+  it("scopes server status to current vault and avoids false-positive Running on foreign 8188", async () => {
+    // Current vault tempDir is stopped
+    expect(getRunningDaemonInfo(tempDir)).toBeNull();
+
+    const statusRes = await runCliBin(["server", "status", "--vault", tempDir]);
+    expect(statusRes.code).toBe(0);
+    expect(statusRes.stdout).toContain("Daemon Stopped");
+  });
+
+  it("supports `rule show`, `rule install`, `rule remove` CLI commands", async () => {
+    // 1. rule show
+    const showRes = await runCliBin(["rule", "show"]);
+    expect(showRes.code).toBe(0);
+    expect(showRes.stdout).toContain("<!-- lernstoff:start -->");
+    expect(showRes.stdout).toContain("lernstoff_search_memory");
+    expect(showRes.stdout).toContain("<!-- lernstoff:end -->");
+
+    // 2. rule install (project scope by default)
+    const installRes = await runCliBin(["rule", "install", "--project", tempDir]);
+    expect(installRes.code).toBe(0);
+    expect(installRes.stdout).toContain("Installed Lernstoff rule");
+    const agentsPath = join(tempDir, "AGENTS.md");
+    expect(existsSync(agentsPath)).toBe(true);
+    expect(readFileSync(agentsPath, "utf-8")).toContain("<!-- lernstoff:start -->");
+
+    // 3. rule install --global
+    const globalRes = await runCliBin(["rule", "install", "--global"]);
+    expect(globalRes.code).toBe(0);
+    expect(existsSync(join(homeDir, ".codex/AGENTS.md"))).toBe(true);
+    expect(existsSync(join(homeDir, ".claude/CLAUDE.md"))).toBe(true);
+    expect(existsSync(join(homeDir, ".gemini/GEMINI.md"))).toBe(true);
+    expect(existsSync(join(homeDir, ".workbuddy/rules/lernstoff.md"))).toBe(true);
+
+    // 4. rule remove (project scope)
+    const removeRes = await runCliBin(["rule", "remove", "--project", tempDir]);
+    expect(removeRes.code).toBe(0);
+    expect(readFileSync(agentsPath, "utf-8")).not.toContain("<!-- lernstoff:start -->");
+  });
+
+  it("installs full skill directory with references/ and supports codex and workbuddy targets", async () => {
+    const skillRes = await runCliBin(["skill", "install", "--target", "all", "--vault", tempDir]);
+    expect(skillRes.code).toBe(0);
+    expect(skillRes.stdout).toContain("Installed SKILL.md");
+
+    // Check Claude skill
+    const claudeSkillDir = join(homeDir, ".claude/skills/lernstoff-wiki");
+    expect(existsSync(join(claudeSkillDir, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(claudeSkillDir, "references/mcp-tools.md"))).toBe(true);
+    expect(existsSync(join(claudeSkillDir, "references/best-practices.md"))).toBe(true);
+
+    // Check Codex skill
+    const codexSkillDir = join(tempDir, ".agents/skills/lernstoff-wiki");
+    expect(existsSync(join(codexSkillDir, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(codexSkillDir, "references/mcp-tools.md"))).toBe(true);
+
+    // Check Workbuddy skill
+    const workbuddySkillDir = join(homeDir, ".workbuddy/skills/lernstoff-wiki");
+    expect(existsSync(join(workbuddySkillDir, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(workbuddySkillDir, "references/best-practices.md"))).toBe(true);
   });
 });

@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initVault, DEFAULT_LERNSTOFF_CONFIG, LERNSTOFF_DIR } from "@lernstoff/core";
 
+const { getLanguageMock } = vi.hoisted(() => {
+  return {
+    getLanguageMock: vi.fn<[], string | undefined>(() => undefined),
+  };
+});
+
 // Mock obsidian classes
 vi.mock("obsidian", () => {
   class MockSetting {
@@ -220,6 +226,7 @@ vi.mock("obsidian", () => {
     Setting: MockSetting,
     Notice: MockNotice,
     App: class {},
+    getLanguage: () => getLanguageMock(),
   };
 });
 
@@ -245,6 +252,7 @@ describe("Obsidian Plugin SettingsTab (5 Visual Modules)", () => {
   });
 
   afterEach(() => {
+    getLanguageMock.mockReturnValue(undefined);
     (tab as any).hide?.();
     client.destroy();
     if (existsSync(tempDir)) {
@@ -505,5 +513,189 @@ describe("Obsidian Plugin SettingsTab (5 Visual Modules)", () => {
     (Notice as any).notices = [];
     await stopBtn.onClickHandler();
     expect((Notice as any).notices.some((n: string) => n.includes("Failed to stop"))).toBe(true);
+  });
+
+  it("rolls back OS Boot Auto-Start toggle and alerts when installService or uninstallService fails", async () => {
+    tab.display();
+    const serviceSetting = tab.containerEl.settings.find(
+      (s: any) => s.name === "OS Boot Auto-Start",
+    );
+    expect(serviceSetting).toBeDefined();
+    const toggle = serviceSetting.elements[0];
+
+    // Mock installService failure
+    vi.spyOn(client, "installService").mockResolvedValueOnce({
+      success: false,
+      error: "launchctl permission denied",
+    });
+
+    (Notice as any).notices = [];
+    await toggle.changeHandler(true);
+    expect(toggle.val).toBe(false);
+    expect(
+      (Notice as any).notices.some((n: string) => n.includes("launchctl permission denied")),
+    ).toBe(true);
+
+    // Mock uninstallService failure
+    vi.spyOn(client, "uninstallService").mockResolvedValueOnce({
+      success: false,
+      error: "systemctl service locked",
+    });
+
+    (Notice as any).notices = [];
+    await toggle.changeHandler(false);
+    expect(toggle.val).toBe(true);
+    expect(
+      (Notice as any).notices.some((n: string) => n.includes("systemctl service locked")),
+    ).toBe(true);
+  });
+
+  it("surfaces real ActionResult failures for Agent and Maintenance actions", async () => {
+    tab.display();
+
+    // 1. Agent button failure
+    vi.spyOn(client, "installAgent").mockResolvedValueOnce({
+      success: false,
+      error: "Failed to write SKILL.md",
+    });
+    const agentSetting = tab.containerEl.settings.find(
+      (s: any) => s.name === "One-Click MCP & SKILL.md Installation",
+    );
+    const claudeBtn = agentSetting.elements.find((b: any) => b.text === "Claude Code");
+    (Notice as any).notices = [];
+    await claudeBtn.onClickHandler();
+    expect(
+      (Notice as any).notices.some((n: string) => n.includes("Failed to write SKILL.md")),
+    ).toBe(true);
+
+    // 2. Maintenance updateIndex failure
+    vi.spyOn(client, "updateIndex").mockResolvedValueOnce({
+      success: false,
+      error: "Vector index locked",
+    });
+    const maintSetting = tab.containerEl.settings.find(
+      (s: any) => s.name === "Storage Maintenance & Index Synchronization",
+    );
+    const updateIndexBtn = maintSetting.elements.find((b: any) => b.text === "Update Index");
+    (Notice as any).notices = [];
+    await updateIndexBtn.onClickHandler();
+    expect((Notice as any).notices.some((n: string) => n.includes("Vector index locked"))).toBe(
+      true,
+    );
+  });
+
+  it("registers commands with clean English names via i18n and populates en.json", async () => {
+    const enLocale = (await import("../src/locales/en.json", { with: { type: "json" } })).default;
+    expect(Object.keys(enLocale).length).toBeGreaterThan(0);
+
+    const app = {
+      vault: { adapter: { getBasePath: () => tempDir }, getAbstractFileByPath: () => null },
+    } as any;
+    const plugin = new LernstoffPlugin(app, { id: "lernstoff-wiki" } as any);
+    vi.spyOn(DaemonClient.prototype, "init").mockResolvedValueOnce(undefined);
+    await plugin.onload();
+
+    const openInquiryCmd = (plugin as any).commands.get("open-inquiry-tree");
+    expect(openInquiryCmd.name).toBe("Open Inquiry Tree");
+    const openScratchpadCmd = (plugin as any).commands.get("open-scratchpad");
+    expect(openScratchpadCmd.name).toBe("Open Scratchpad");
+    const addInquiryCmd = (plugin as any).commands.get("add-selection-to-inquiries");
+    expect(addInquiryCmd.name).toBe("Add Selection to Inquiry Tree");
+    const deferScratchpadCmd = (plugin as any).commands.get("defer-selection-to-scratchpad");
+    expect(deferScratchpadCmd.name).toBe("Defer Selection to Scratchpad");
+    const socraticLintCmd = (plugin as any).commands.get("run-socratic-lint");
+    expect(socraticLintCmd.name).toBe("Run Socratic Wiki Lint");
+    const consolidateCmd = (plugin as any).commands.get("consolidate-scratchpad");
+    expect(consolidateCmd.name).toBe("Consolidate & GC Scratchpad");
+    const restartCmd = (plugin as any).commands.get("restart-daemon");
+    expect(restartCmd.name).toBe("Restart Background Daemon");
+    const startCmd = (plugin as any).commands.get("start-daemon");
+    expect(startCmd.name).toBe("Start Background Daemon");
+    const stopCmd = (plugin as any).commands.get("stop-daemon");
+    expect(stopCmd.name).toBe("Stop Background Daemon");
+
+    plugin.onunload();
+  });
+
+  it("switches commands, status bar, and settings tab to active locale (zh, zh-TW, ja, ko) and falls back to en for unsupported locales", async () => {
+    const testCases: Array<{
+      locale: string;
+      expectedOpenCmd: string;
+      expectedOfflineStatus: string;
+      expectedHeading1: string;
+      expectedServerPortName: string;
+    }> = [
+      {
+        locale: "zh",
+        expectedOpenCmd: "打开好奇心问题树",
+        expectedOfflineStatus: "🧠 Lernstoff: ⚪ 离线",
+        expectedHeading1: "1. 守护进程与开机自启",
+        expectedServerPortName: "服务器端口",
+      },
+      {
+        locale: "zh-TW",
+        expectedOpenCmd: "開啟好奇心問題樹",
+        expectedOfflineStatus: "🧠 Lernstoff: ⚪ 離線",
+        expectedHeading1: "1. 守護行程與開機自啟",
+        expectedServerPortName: "伺服器連接埠",
+      },
+      {
+        locale: "ja",
+        expectedOpenCmd: "問いの木を開く",
+        expectedOfflineStatus: "🧠 Lernstoff: ⚪ オフライン",
+        expectedHeading1: "1. デーモンとOS自動起動",
+        expectedServerPortName: "サーバーポート",
+      },
+      {
+        locale: "ko",
+        expectedOpenCmd: "질문 트리 열기",
+        expectedOfflineStatus: "🧠 Lernstoff: ⚪ 오프라인",
+        expectedHeading1: "1. 데몬 및 OS 부팅 시 자동 시작",
+        expectedServerPortName: "서버 포트",
+      },
+      {
+        locale: "fr", // Unsupported locale -> should fall back to English
+        expectedOpenCmd: "Open Inquiry Tree",
+        expectedOfflineStatus: "🧠 Lernstoff: ⚪ Offline",
+        expectedHeading1: "1. Daemon & OS Boot Auto-Start",
+        expectedServerPortName: "Server Port",
+      },
+    ];
+
+    for (const tc of testCases) {
+      getLanguageMock.mockReturnValue(tc.locale);
+
+      const app = {
+        vault: { adapter: { getBasePath: () => tempDir }, getAbstractFileByPath: () => null },
+      } as any;
+      const plugin = new LernstoffPlugin(app, { id: "lernstoff-wiki" } as any);
+      vi.spyOn(DaemonClient.prototype, "init").mockResolvedValueOnce(undefined);
+      await plugin.onload();
+
+      // Check command name
+      const openInquiryCmd = (plugin as any).commands.get("open-inquiry-tree");
+      expect(openInquiryCmd.name).toBe(tc.expectedOpenCmd);
+
+      // Check status bar text
+      const statusBar = (plugin as any).statusBarItems[0];
+      expect(statusBar.text).toBe(tc.expectedOfflineStatus);
+
+      // Check settings tab rendering
+      const pluginTab: LernstoffSettingsTab = (plugin as any).settingTabs[0];
+      pluginTab.display();
+
+      const headings = pluginTab.containerEl.elements
+        .filter((el: any) => el.tagName === "h3")
+        .map((el: any) => el.text);
+      expect(headings[0]).toBe(tc.expectedHeading1);
+
+      const portSetting = pluginTab.containerEl.settings.find(
+        (s: any) => s.name === tc.expectedServerPortName,
+      );
+      expect(portSetting).toBeDefined();
+
+      (pluginTab as any).hide?.();
+      plugin.onunload();
+    }
   });
 });

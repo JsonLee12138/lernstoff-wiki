@@ -10,6 +10,7 @@
   "type": "module",
   "scripts": {
     "check": "vp check",
+    "i18n:check": "x18n check",
     "test": "vp test --exclude 'e2e/**'",
     "test:e2e": "vp test --dir e2e --no-file-parallelism --testTimeout 30000 --hookTimeout 30000 --run",
     "build": "tsdown -W && node scripts/sync-plugin-assets.mjs",
@@ -19,6 +20,8 @@
   "devDependencies": {
     "@tobilu/qmd": "^2.8.3",
     "@types/node": "^22.13.0",
+    "@x18n/cli": "^0.1.14",
+    "@x18n/core": "^0.1.14",
     "tsdown": "^0.23.7",
     "typescript": "^5.8.0",
     "vite-plus": "^1.1.0",

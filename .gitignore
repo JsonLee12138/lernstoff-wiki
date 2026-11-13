@@ -19,3 +19,7 @@ tasks/
 TODO.md
 todo.md
 *.scratch.*
+.artifacts/
+
+# code-review-graph AST database
+.code-review-graph/

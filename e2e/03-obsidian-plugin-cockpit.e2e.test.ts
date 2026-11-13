@@ -578,7 +578,7 @@ describe("E2E Flow 03: Obsidian Plugin Cockpit, Real Daemon State Sync & Action 
     (settingsTab as any).hide?.();
   });
 
-  it("3.8 auto-increments occupied Server Port, persists actual port to config.json, and surfaces UI fallback hints (AC-2)", async () => {
+  it("3.8 auto-increments occupied Server Port without mutating config.json, and surfaces UI fallback hints (AC-2)", async () => {
     await sandbox.runCli(["init", "--vault", sandbox.vaultDir]);
     await sandbox.runCli([
       "config",
@@ -637,8 +637,8 @@ describe("E2E Flow 03: Obsidian Plugin Cockpit, Real Daemon State Sync & Action 
       const persistedCfg = JSON.parse(
         readFileSync(join(sandbox.vaultDir, ".lernstoff/config.json"), "utf-8"),
       );
-      expect(persistedCfg.server.port).toBe(actualPort);
-      expect(portText.val).toBe(String(actualPort));
+      expect(persistedCfg.server.port).toBe(occupiedPort);
+      expect(portText.val).toBe(String(occupiedPort));
       expect(statusSetting.desc).toContain(String(occupiedPort));
       expect(statusSetting.desc).toContain(String(actualPort));
       expect(

@@ -6,7 +6,7 @@ import {
   readdirSync,
   unlinkSync,
 } from "node:fs";
-import { join, resolve, basename, dirname } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { request as httpRequest, type ClientRequest } from "node:http";
 import { homedir } from "node:os";
@@ -18,13 +18,6 @@ import {
   LERNSTOFF_DIR,
 } from "@lernstoff/core/config";
 import { initVault } from "@lernstoff/core/vault-init";
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
 
 function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -157,6 +150,11 @@ export interface DaemonMetrics {
   scratchpadTotal: number;
   scratchpadPromotionsReady: number;
   noiseFilteredRatio?: number;
+}
+
+export interface ActionResult {
+  success: boolean;
+  error?: string;
 }
 
 export type StatusListener = (status: {
@@ -343,9 +341,6 @@ export class DaemonClient {
               requestedPort: data.requestedPort,
               actualPort: this.port,
             };
-            if (this.config.server.port === data.requestedPort) {
-              this.config.server.port = this.port;
-            }
           }
 
           if (options?.skipMetrics) {
@@ -580,10 +575,6 @@ export class DaemonClient {
               requestedPort,
               actualPort: this.port,
             };
-            if (this.config.server.port !== this.port) {
-              this.config.server.port = this.port;
-              saveConfig(this.vaultPath, this.config);
-            }
           } else {
             this.lastPortFallback = undefined;
           }
@@ -751,156 +742,75 @@ export class DaemonClient {
     return await this.startDaemon();
   }
 
-  public async installService(): Promise<boolean> {
-    const _res = await this.runCli(["service", "install", "--vault", this.vaultPath]);
-    this.config.server.autoStartOnBoot = true;
-    this.updateConfig(this.config);
-
-    // Fallback file generation if CLI wrapper couldn't reach or on specific platform
-    const home = process.env.HOME || homedir();
-    const slug = slugify(basename(resolve(this.vaultPath)) || "default");
-    const expectedServiceFile =
-      process.platform === "darwin"
-        ? join(home, "Library/LaunchAgents", `ai.lernstoff.wiki.${slug}.plist`)
-        : process.platform === "linux"
-          ? join(home, ".config/systemd/user", `lernstoff-wiki@${slug}.service`)
-          : join(this.vaultPath, ".lernstoff", "autostart.cmd");
-
-    if (!existsSync(expectedServiceFile)) {
-      mkdirSync(dirname(expectedServiceFile), { recursive: true });
-      if (process.platform === "darwin") {
-        const pathEnv =
-          process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin";
-        const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>ai.lernstoff.wiki.${slug}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${process.execPath}</string>
-    <string>server</string>
-    <string>start</string>
-    <string>--foreground</string>
-    <string>--vault</string>
-    <string>${resolve(this.vaultPath)}</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>${pathEnv}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-</dict>
-</plist>
-`;
-        writeFileSync(expectedServiceFile, plist, "utf-8");
-      } else if (process.platform === "linux") {
-        const unit = `[Unit]
-Description=Lernstoff Wiki Headless Cognitive Engine (${slug})
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${resolve(this.vaultPath)}
-ExecStart=lernstoff server start --foreground --vault ${resolve(this.vaultPath)}
-Restart=always
-
-[Install]
-WantedBy=default.target
-`;
-        writeFileSync(expectedServiceFile, unit, "utf-8");
-      } else {
-        writeFileSync(
-          expectedServiceFile,
-          `@echo off\nlernstoff server start --foreground --vault "${this.vaultPath}"\n`,
-          "utf-8",
-        );
-      }
+  public async installService(): Promise<ActionResult> {
+    const res = await this.runCli(["service", "install", "--vault", this.vaultPath]);
+    if (res.code === 0) {
+      this.loadLocalConfig();
+      this.notify();
+      return { success: true };
     }
-
-    return true;
-  }
-
-  public async uninstallService(): Promise<boolean> {
-    await this.runCli(["service", "uninstall", "--vault", this.vaultPath]);
-    this.config.server.autoStartOnBoot = false;
-    this.updateConfig(this.config);
-
-    const home = process.env.HOME || homedir();
-    const slug = slugify(basename(resolve(this.vaultPath)) || "default");
-    const serviceFile =
-      process.platform === "darwin"
-        ? join(home, "Library/LaunchAgents", `ai.lernstoff.wiki.${slug}.plist`)
-        : process.platform === "linux"
-          ? join(home, ".config/systemd/user", `lernstoff-wiki@${slug}.service`)
-          : join(this.vaultPath, ".lernstoff", "autostart.cmd");
-
-    if (existsSync(serviceFile)) {
-      try {
-        unlinkSync(serviceFile);
-      } catch {}
-    }
-
-    return true;
-  }
-
-  public async installAgent(target: "all" | "claude" | "cursor" | "antigravity"): Promise<boolean> {
-    await this.runCli(["skill", "install", "--target", target, "--vault", this.vaultPath]);
-
-    // Ensure target configuration files are guaranteed present on disk
-    const absVault = resolve(this.vaultPath);
-    const home = process.env.HOME || homedir();
-    const mcpEntry = {
-      command: "lernstoff",
-      args: ["mcp", "--vault", absVault],
+    return {
+      success: false,
+      error:
+        res.stderr.trim() ||
+        res.stdout.trim() ||
+        `CLI service install exited with code ${res.code}`,
     };
-
-    if (target === "claude" || target === "all") {
-      const vaultMcp = join(absVault, ".mcp.json");
-      if (!existsSync(vaultMcp)) {
-        writeFileSync(
-          vaultMcp,
-          JSON.stringify({ mcpServers: { lernstoff: mcpEntry } }, null, 2),
-          "utf-8",
-        );
-      }
-    }
-
-    if (target === "cursor" || target === "all") {
-      const cursorDir = join(absVault, ".cursor");
-      mkdirSync(cursorDir, { recursive: true });
-      const cursorMcp = join(cursorDir, "mcp.json");
-      if (!existsSync(cursorMcp)) {
-        writeFileSync(
-          cursorMcp,
-          JSON.stringify({ mcpServers: { lernstoff: mcpEntry } }, null, 2),
-          "utf-8",
-        );
-      }
-    }
-
-    if (target === "antigravity" || target === "all") {
-      const agyDir = join(home, ".gemini", "antigravity");
-      mkdirSync(agyDir, { recursive: true });
-      const agyMcp = join(agyDir, "mcp_config.json");
-      if (!existsSync(agyMcp)) {
-        writeFileSync(
-          agyMcp,
-          JSON.stringify({ mcpServers: { lernstoff: mcpEntry } }, null, 2),
-          "utf-8",
-        );
-      }
-    }
-
-    return true;
   }
 
-  public async updateIndex(): Promise<boolean> {
+  public async uninstallService(): Promise<ActionResult> {
+    const res = await this.runCli(["service", "uninstall", "--vault", this.vaultPath]);
+    if (res.code === 0) {
+      this.loadLocalConfig();
+      this.notify();
+      return { success: true };
+    }
+    return {
+      success: false,
+      error:
+        res.stderr.trim() ||
+        res.stdout.trim() ||
+        `CLI service uninstall exited with code ${res.code}`,
+    };
+  }
+
+  /**
+   * Build the MCP server entry for this vault, resolving the absolute
+   * `lernstoff` binary and `PATH` so GUI agent hosts can spawn it reliably.
+   */
+  public getMcpEntry(): { command: string; args: string[]; env?: Record<string, string> } {
+    const absVault = resolve(this.vaultPath);
+    const { cmd } = this.resolveCommand();
+    const spawnEnv = this.getSpawnEnv(cmd);
+    return {
+      command: cmd,
+      args: ["mcp", "--vault", absVault],
+      ...(cmd !== "lernstoff" && spawnEnv.PATH ? { env: { PATH: spawnEnv.PATH } } : {}),
+    };
+  }
+
+  public async installAgent(
+    target: "all" | "claude" | "cursor" | "antigravity",
+  ): Promise<ActionResult> {
+    const res = await this.runCli([
+      "skill",
+      "install",
+      "--target",
+      target,
+      "--vault",
+      this.vaultPath,
+    ]);
+    if (res.code === 0) {
+      return { success: true };
+    }
+    return {
+      success: false,
+      error:
+        res.stderr.trim() || res.stdout.trim() || `CLI skill install exited with code ${res.code}`,
+    };
+  }
+
+  public async updateIndex(): Promise<ActionResult> {
     if (this.isRunning) {
       try {
         const res = await localHttpJson({
@@ -910,14 +820,25 @@ WantedBy=default.target
           body: { action: "update" },
           timeoutMs: 10_000,
         });
-        if (res.ok) return true;
+        if (res.ok) return { success: true };
+        return {
+          success: false,
+          error: (res.json as any)?.error || `Daemon returned HTTP ${res.status}`,
+        };
       } catch {}
     }
     const cliRes = await this.runCli(["doctor", "--pull-models", "--vault", this.vaultPath]);
-    return cliRes.code === 0;
+    if (cliRes.code === 0) return { success: true };
+    return {
+      success: false,
+      error:
+        cliRes.stderr.trim() ||
+        cliRes.stdout.trim() ||
+        `CLI doctor exited with code ${cliRes.code}`,
+    };
   }
 
-  public async cleanupOrphans(): Promise<boolean> {
+  public async cleanupOrphans(): Promise<ActionResult> {
     if (this.isRunning) {
       try {
         const res = await localHttpJson({
@@ -927,11 +848,22 @@ WantedBy=default.target
           body: { action: "cleanup" },
           timeoutMs: 10_000,
         });
-        if (res.ok) return true;
+        if (res.ok) return { success: true };
+        return {
+          success: false,
+          error: (res.json as any)?.error || `Daemon returned HTTP ${res.status}`,
+        };
       } catch {}
     }
     const cliRes = await this.runCli(["doctor", "--cleanup", "--vault", this.vaultPath]);
-    return cliRes.code === 0;
+    if (cliRes.code === 0) return { success: true };
+    return {
+      success: false,
+      error:
+        cliRes.stderr.trim() ||
+        cliRes.stdout.trim() ||
+        `CLI doctor cleanup exited with code ${cliRes.code}`,
+    };
   }
 
   private connectSse(): void {

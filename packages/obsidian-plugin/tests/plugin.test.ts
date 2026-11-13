@@ -529,4 +529,108 @@ describe("Obsidian Plugin DaemonClient & Settings Synchronization", () => {
       await new Promise<void>((r) => mockDaemon.close(() => r()));
     }
   });
+
+  it("installAgent() delegates to `lernstoff skill install` CLI and reflects ActionResult", async () => {
+    const fakeDir = mkdtempSync(join(tmpdir(), "lernstoff-plugin-cli-"));
+    try {
+      const argsLog = join(fakeDir, "args.txt");
+      const okCli = join(fakeDir, "lernstoff-ok");
+      writeFileSync(okCli, `#!/bin/sh\nprintf '%s\n' "$@" > "${argsLog}"\nexit 0\n`, {
+        mode: 0o755,
+      });
+
+      client.cliPathOverride = okCli;
+      const resOk = await client.installAgent("antigravity");
+      expect(resOk.success).toBe(true);
+      expect(resOk.error).toBeUndefined();
+      expect(readFileSync(argsLog, "utf-8").trim().split("\n")).toEqual([
+        "skill",
+        "install",
+        "--target",
+        "antigravity",
+        "--vault",
+        tempDir,
+      ]);
+
+      const failCli = join(fakeDir, "lernstoff-fail");
+      writeFileSync(failCli, `#!/bin/sh\n>&2 echo "Permission denied"\nexit 1\n`, { mode: 0o755 });
+      client.cliPathOverride = failCli;
+      const resFail = await client.installAgent("claude");
+      expect(resFail.success).toBe(false);
+      expect(resFail.error).toContain("Permission denied");
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("installService() and uninstallService() delegate to CLI and do not write rogue files on failure", async () => {
+    const fakeDir = mkdtempSync(join(tmpdir(), "lernstoff-service-cli-"));
+    try {
+      const argsLog = join(fakeDir, "service-args.txt");
+      const okCli = join(fakeDir, "lernstoff-service-ok");
+      writeFileSync(okCli, `#!/bin/sh\nprintf '%s\n' "$@" > "${argsLog}"\nexit 0\n`, {
+        mode: 0o755,
+      });
+
+      client.cliPathOverride = okCli;
+      const installRes = await client.installService();
+      expect(installRes.success).toBe(true);
+      expect(readFileSync(argsLog, "utf-8").trim().split("\n")).toEqual([
+        "service",
+        "install",
+        "--vault",
+        tempDir,
+      ]);
+
+      const uninstallRes = await client.uninstallService();
+      expect(uninstallRes.success).toBe(true);
+      expect(readFileSync(argsLog, "utf-8").trim().split("\n")).toEqual([
+        "service",
+        "uninstall",
+        "--vault",
+        tempDir,
+      ]);
+
+      // When CLI fails, returns failure ActionResult with error message
+      const failCli = join(fakeDir, "lernstoff-service-fail");
+      writeFileSync(failCli, `#!/bin/sh\n>&2 echo "launchctl: Service not found"\nexit 2\n`, {
+        mode: 0o755,
+      });
+      client.cliPathOverride = failCli;
+      const failRes = await client.installService();
+      expect(failRes.success).toBe(false);
+      expect(failRes.error).toContain("launchctl: Service not found");
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("updateIndex() and cleanupOrphans() reflect ActionResult across HTTP RPC and CLI fallback", async () => {
+    const fakeDir = mkdtempSync(join(tmpdir(), "lernstoff-maint-cli-"));
+    try {
+      const okCli = join(fakeDir, "lernstoff-maint-ok");
+      writeFileSync(okCli, `#!/bin/sh\nexit 0\n`, { mode: 0o755 });
+      client.cliPathOverride = okCli;
+
+      // Daemon not running -> falls back to CLI
+      expect(client.isRunning).toBe(false);
+      const updateRes = await client.updateIndex();
+      expect(updateRes.success).toBe(true);
+
+      const cleanupRes = await client.cleanupOrphans();
+      expect(cleanupRes.success).toBe(true);
+
+      // CLI fails -> returns failure
+      const failCli = join(fakeDir, "lernstoff-maint-fail");
+      writeFileSync(failCli, `#!/bin/sh\n>&2 echo "Failed to pull GGUF model"\nexit 1\n`, {
+        mode: 0o755,
+      });
+      client.cliPathOverride = failCli;
+      const failUpdate = await client.updateIndex();
+      expect(failUpdate.success).toBe(false);
+      expect(failUpdate.error).toContain("Failed to pull GGUF model");
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
 });

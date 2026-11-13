@@ -12,3 +12,4 @@ export * from "./vault-watcher.js";
 export * from "./vault-ops.js";
 export * from "./mcp-server.js";
 export * from "./daemon-server.js";
+export * from "./rule-installer.js";
