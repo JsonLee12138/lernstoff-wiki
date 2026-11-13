@@ -7,9 +7,9 @@ function getCorePackageVersion(): string {
   try {
     const require = createRequire(import.meta.url);
     const pkg = require("../package.json");
-    return pkg.version || "0.1.0-beta.6";
+    return pkg.version || "0.1.0";
   } catch {
-    return "0.1.0-beta.6";
+    return "0.1.0";
   }
 }
 

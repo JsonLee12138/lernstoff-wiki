@@ -1,6 +1,6 @@
 {
   "name": "@lernstoff/cli",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0",
   "description": "Headless CLI and daemon manager for Lernstoff cognitive note-taking engine",
   "homepage": "https://github.com/JsonLee12138/lernstoff-wiki#readme",
   "license": "MIT",
