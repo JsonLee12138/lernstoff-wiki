@@ -199,7 +199,32 @@ JSON payload containing:
 
 ---
 
-## 9. Dynamic Resource: `lernstoff://{+path}`
+## 9. `lernstoff_install_rule`
+
+Idempotently installs or removes Lernstoff Wiki memory routing rules in project `AGENTS.md` (with optional `@AGENTS.md` sync into `CLAUDE.md`) or global agent configurations (`codex`, `claude`, `antigravity`, `workbuddy`).
+
+### Input Schema
+
+- `action` (`"install" | "remove"`, required): Action to perform.
+- `global` (`boolean`, default `false`): Install/remove rules at global user scope instead of project scope.
+- `target` (`"all" | "codex" | "claude" | "antigravity" | "workbuddy"`, default `"all"`): Target agent environment for global installation.
+- `projectPath` (`string`, optional): Project directory for project-level installation (defaults to vault directory or cwd).
+- `homeDir` (`string`, optional): User home directory override.
+- `syncClaude` (`boolean`, default `true`): Append `@AGENTS.md` to project `CLAUDE.md` if present and not yet referencing `AGENTS.md`.
+
+### Return Value
+
+Summary string listing `updatedFiles` and `syncedClaudeFiles`.
+
+---
+
+## 10. Static Resource: `lernstoff://guide/best-practices`
+
+Provides the built-in Lernstoff Best Practices & Socratic Defense Protocol guide (`text/markdown`).
+
+---
+
+## 11. Dynamic Resource: `lernstoff://{+path}`
 
 Provides direct read access to any markdown document or note in the Vault via MCP Resource URI.
 
